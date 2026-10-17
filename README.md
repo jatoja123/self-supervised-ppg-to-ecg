@@ -25,12 +25,57 @@ Electrocardiogram (ECG) signals are frequently utilized for detecting important 
 
 ## Data-Processing
 
-To get the datasets, run `train_model.py`.
+Dataset files must be downloaded separately. The default loader in
+`code/alyx_data.py` reads Who is Alyx? from `data/who-is-alyx` or
+`data/who-is-alyx-2.1`. A DVC checkout must contain the actual physiological
+JSON files, not just their `.dvc` pointers.
+
+The loader supports Alyx JSON entries of the form
+`"sample_index": [value, "receipt timestamp"]`, as well as timestamp-keyed
+signals. For indexed recordings it reconstructs the sample clock at 130 Hz
+(ECG) or 64 Hz (PPG), anchored at the first receipt timestamp. Bluetooth
+receipt timestamps occur in batches and are not individual sample times.
+Missing indices are treated as gaps. Unmarked sample loss and differences
+in device delivery latency cannot be corrected from these files alone.
 
 ## Train 
 
 Run `train.py` for the training. For evaluation run `eval.py`. Cross-validation should be done within train set.
 Run `self_supervised_transformation.py` to make self-supervised ECG transformations.
+
+Check the default dataset without starting training:
+
+```powershell
+.\.venv\Scripts\python.exe code/train.py --check-data
+```
+
+### Other datasets
+
+The models and training loop are independent of the file format. Add a module
+such as `code/my_data.py` exposing this function:
+
+```python
+def load_segments(data_dir, *, sampling_rate, window_seconds, overlap_ratio):
+    # Read your format, align PPG/ECG, resample to sampling_rate, filter,
+    # normalize each signal window to [-1, 1], and segment the recordings.
+    # Return float32 arrays (N, T) and subject IDs of shape (N,).
+    # T is normally round(sampling_rate * window_seconds).
+    # Give every window/session of the same participant the same ID.
+    return ppg_segments, ecg_segments, subject_ids
+```
+
+Select it without changing `train.py`:
+
+```powershell
+.\.venv\Scripts\python.exe code/train.py --data-loader my_data:load_segments --data-dir data/my-dataset --sampling-rate 128
+```
+
+`data_dir` is a `Path`, or `None` when omitted; each loader chooses its own
+default directory. IDs can be integers or strings. The shared split requires
+at least three participants and keeps each participant in a single split;
+`--held-out-subject` selects the test participant. SSL uses the training ECG
+windows for every dataset. Shared filtering and windowing helpers live in
+`code/signal_preprocessing.py`.
 
 
 

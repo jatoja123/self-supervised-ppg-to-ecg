@@ -32,17 +32,20 @@ import os
 import math
 import copy
 import random
+import argparse
+from importlib import import_module
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Dict, Tuple, List
 
 import numpy as np
-from scipy import signal
-from scipy.interpolate import CubicSpline
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+
+from self_supervised_transformation import apply_transformation
 
 
 # ============================================================
@@ -114,6 +117,7 @@ class ModelConfig:
     lr_discriminator: float = 1e-4
     betas: Tuple[float, float] = (0.5, 0.9)
     lambda_gp: float = 10.0
+    lambda_l1: float = 10.0
     n_critic: int = 5
     early_stopping_patience: int = 12
 
@@ -121,57 +125,6 @@ class ModelConfig:
 
 
 CFG = ModelConfig()
-
-
-# ============================================================
-# Preprocessing helpers
-# ============================================================
-
-def resample_signal_cubic(x: np.ndarray, original_fs: float, target_fs: float) -> np.ndarray:
-    if original_fs == target_fs:
-        return x.copy()
-    t_old = np.arange(len(x)) / original_fs
-    duration = (len(x) - 1) / original_fs
-    n_new = int(round(duration * target_fs)) + 1
-    t_new = np.arange(n_new) / target_fs
-    cs = CubicSpline(t_old, x)
-    return cs(t_new)
-
-
-def fir_bandpass_ecg(x: np.ndarray, fs: int, low: float = 0.5, high: float = 45.0, numtaps: int = 401):
-    nyq = fs / 2.0
-    taps = signal.firwin(numtaps, [low / nyq, high / nyq], pass_zero=False)
-    return signal.filtfilt(taps, [1.0], x)
-
-
-def butter_bandpass_ppg(x: np.ndarray, fs: int, low: float = 0.5, high: float = 8.0, order: int = 4):
-    nyq = fs / 2.0
-    b, a = signal.butter(order, [low / nyq, high / nyq], btype="band")
-    return signal.filtfilt(b, a, x)
-
-
-def median_denoise(x: np.ndarray, kernel_size: int = 5):
-    if kernel_size % 2 == 0:
-        kernel_size += 1
-    return signal.medfilt(x, kernel_size=kernel_size)
-
-
-def minmax_normalize_minus1_1(x: np.ndarray, eps: float = 1e-8):
-    xmin = np.min(x)
-    xmax = np.max(x)
-    return 2.0 * (x - xmin) / (xmax - xmin + eps) - 1.0, xmin, xmax
-
-
-def invert_minmax_minus1_1(x_norm: np.ndarray, xmin: float, xmax: float):
-    return ((x_norm + 1.0) / 2.0) * (xmax - xmin) + xmin
-
-
-def segment_with_overlap(x: np.ndarray, window_size: int, overlap_ratio: float = 0.2):
-    step = max(1, int(window_size * (1.0 - overlap_ratio)))
-    segments = []
-    for start in range(0, len(x) - window_size + 1, step):
-        segments.append(x[start:start + window_size])
-    return np.stack(segments, axis=0) if segments else np.empty((0, window_size))
 
 
 # ============================================================
@@ -324,7 +277,7 @@ class GeneratorTransformerBottleneck(nn.Module):
         x = self.proj_in(x)          # (B, D, T)
         x = x.transpose(1, 2)        # (B, T, D)
         x = self.pos_embed(x)
-        x = self.transformer(x, causal=True)
+        x = self.transformer(x, causal=False)
         x = x.transpose(1, 2)        # (B, D, T)
         x = self.proj_out(x)         # (B, C, T)
         return x
@@ -600,7 +553,9 @@ def compute_gradient_penalty(
     x_hat = eps * real_ecg + (1.0 - eps) * fake_ecg
     x_hat.requires_grad_(True)
 
-    d_hat = discriminator(x_hat, mode=mode)
+    # Flash attention lacks the second derivatives needed by gradient penalty.
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+        d_hat = discriminator(x_hat, mode=mode)
 
     grads = torch.autograd.grad(
         outputs=d_hat,
@@ -801,7 +756,7 @@ def train_wgan_gp(
             # --------------------------------------------------
             fake_ecg = generator(ppg)
             fake_scores = discriminator(fake_ecg, mode="critic")
-            g_loss = generator_wgan_loss(fake_scores)
+            g_loss = generator_wgan_loss(fake_scores) + cfg.lambda_l1 * F.l1_loss(fake_ecg, real_ecg)
 
             opt_g.zero_grad()
             g_loss.backward()
@@ -882,58 +837,148 @@ def loso_split(subject_ids: np.ndarray, held_out_subject):
 
 
 # ============================================================
-# Example main
+# Dataset-independent loading and training entry point
 # ============================================================
 
-def main():
+def load_training_data(loader_spec: str, data_dir: Optional[Path], *,
+                       sampling_rate: int, window_seconds: float, overlap_ratio: float):
+    """Call a module:function loader returning normalized PPG, ECG and subject IDs.
+
+    Loaders own file formats, synchronization, resampling, filtering and windowing.
+    They receive data_dir (possibly None), sampling_rate, window_seconds and
+    overlap_ratio as keyword arguments. Signals must be finite arrays (N, T)
+    normalized to [-1, 1], with one subject ID per paired window.
+    """
+    if sampling_rate <= 0 or not np.isfinite(window_seconds) or window_seconds <= 0:
+        raise ValueError("Sampling rate and window length must be positive")
+    if not 0 <= overlap_ratio < 1:
+        raise ValueError("Overlap must satisfy 0 <= overlap < 1")
+    module_name, separator, function_name = loader_spec.partition(":")
+    if not separator or not module_name or not function_name:
+        raise ValueError("Data loader must use module:function syntax")
+    loader = getattr(import_module(module_name), function_name)
+    ppg, ecg, subject_ids = loader(
+        data_dir=data_dir, sampling_rate=sampling_rate,
+        window_seconds=window_seconds, overlap_ratio=overlap_ratio)
+    ppg, ecg = np.asarray(ppg, dtype=np.float32), np.asarray(ecg, dtype=np.float32)
+    subject_ids = np.asarray(subject_ids)
+    if ppg.ndim != 2 or ecg.shape != ppg.shape or not len(ppg) or ppg.shape[1] < 16:
+        raise ValueError("Loader must return nonempty paired PPG/ECG arrays of shape (N, T), T >= 16")
+    if subject_ids.ndim != 1 or len(subject_ids) != len(ppg):
+        raise ValueError("Loader must return one subject ID per paired window")
+    if not np.isfinite(ppg).all() or not np.isfinite(ecg).all():
+        raise ValueError("Loader returned non-finite PPG/ECG samples")
+    if max(np.max(np.abs(ppg)), np.max(np.abs(ecg))) > 1.00001:
+        raise ValueError("Loader must normalize PPG/ECG to [-1, 1]")
+    return ppg, ecg, subject_ids
 
 
-    np.random.seed(42)
-    ppg_segments = np.random.randn(N, T).astype(np.float32)
-    ecg_segments = np.random.randn(N, T).astype(np.float32)
-    subject_ids = np.repeat(np.arange(34), N // 34 + 1)[:N]
-
-    # --------------------------------------------------------
-    # Example LOSO split
-    # --------------------------------------------------------
-    held_out_subject = subject_ids[0]
+def split_subjects(subject_ids: np.ndarray, held_out_subject=None,
+                        seed: int = 42):
+    """Keep every session and overlapping window of a player in one split."""
+    unique = np.unique(subject_ids)
+    if len(unique) < 3:
+        raise ValueError("At least three subjects with usable PPG/ECG are required")
+    if held_out_subject is None:
+        held_out_subject = unique[0]
+    matches = unique[unique.astype(str) == str(held_out_subject)]
+    if not len(matches):
+        raise ValueError(f"No usable windows for held-out subject {held_out_subject}")
+    held_out_subject = matches[0]
     train_idx, test_idx = loso_split(subject_ids, held_out_subject)
+    remaining = np.random.default_rng(seed).permutation(np.unique(subject_ids[train_idx]))
+    val_subjects = remaining[:max(1, int(round(0.1 * len(remaining))))]
+    val_mask = np.isin(subject_ids[train_idx], val_subjects)
+    return train_idx[~val_mask], train_idx[val_mask], test_idx
 
-    # validation split: 10% of training
-    n_train = len(train_idx)
-    perm = np.random.permutation(train_idx)
-    n_val = max(1, int(0.1 * n_train))
-    val_idx = perm[:n_val]
-    final_train_idx = perm[n_val:]
+
+class TransformationRecognitionDataset(Dataset):
+    """Six actual ECG transformations, with contiguous labels 0..5.
+
+    Generate on demand to avoid materializing six copies of the recordings.
+    Each index has a fixed seed so validation transformations remain stable.
+    """
+    names = ("noise_addition", "scaling", "temporal_inversion", "permutation", "negation", "time_warping")
+
+    def __init__(self, ecg_segments: np.ndarray, seed: int = 42):
+        self.ecg = ecg_segments
+        self.seed = seed
+
+    def __len__(self):
+        return len(self.ecg) * len(self.names)
+
+    def __getitem__(self, idx):
+        sample_idx, label = divmod(idx, len(self.names))
+        state = np.random.get_state()
+        try:
+            np.random.seed((self.seed + idx) % (2 ** 32))
+            transformed, _ = apply_transformation(self.ecg[sample_idx], self.names[label])
+        finally:
+            np.random.set_state(state)
+        return torch.from_numpy(transformed.copy()).unsqueeze(0), torch.tensor(label, dtype=torch.long)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Train PPG-to-ECG using a dataset loader")
+    parser.add_argument("--data-loader", default="alyx_data:load_alyx_segments",
+                        help="Loader as module:function (default: alyx_data:load_alyx_segments)")
+    parser.add_argument("--data-dir", type=Path, help="Dataset root; defaults are defined by the loader")
+    parser.add_argument("--sampling-rate", type=int, default=130)
+    parser.add_argument("--window-seconds", type=float, default=4.0)
+    parser.add_argument("--overlap", type=float, default=0.2)
+    parser.add_argument("--held-out-subject")
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--epochs-pretrain", type=int, default=90, help="0 skips SSL pretraining")
+    parser.add_argument("--epochs-gan", type=int, default=90)
+    parser.add_argument("--device", default=CFG.device)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--check-data", action="store_true", help="Load and check splits without training")
+    args = parser.parse_args()
+    if args.batch_size < 1 or min(args.epochs_pretrain, args.epochs_gan) < 0:
+        parser.error("Batch size must be positive and epoch counts nonnegative")
+    set_seed(args.seed)
+    cfg = ModelConfig(sampling_rate=args.sampling_rate, batch_size=args.batch_size, epochs_pretrain=args.epochs_pretrain,
+                      epochs_gan=args.epochs_gan, device=args.device)
+    try:
+        ppg_segments, ecg_segments, subject_ids = load_training_data(
+            args.data_loader, args.data_dir, sampling_rate=cfg.sampling_rate,
+            window_seconds=args.window_seconds, overlap_ratio=args.overlap)
+        window_size = ppg_segments.shape[1]
+        if window_size + 1 > cfg.disc_max_tokens or window_size // 16 > cfg.max_tokens:
+            raise ValueError("Window exceeds model positional embedding capacity")
+        final_train_idx, val_idx, test_idx = split_subjects(subject_ids, args.held_out_subject, args.seed)
+    except (FileNotFoundError, ValueError, KeyError, ImportError, AttributeError, TypeError) as exc:
+        parser.error(str(exc))
+    for name, indices in (("train", final_train_idx), ("validation", val_idx), ("test", test_idx)):
+        print(f"{name}: {len(indices)} windows, subjects {np.unique(subject_ids[indices]).tolist()}")
+    if args.check_data:
+        return
 
     train_dataset = PairedPPGECGDataset(ppg_segments[final_train_idx], ecg_segments[final_train_idx])
     val_dataset = PairedPPGECGDataset(ppg_segments[val_idx], ecg_segments[val_idx])
     test_dataset = PairedPPGECGDataset(ppg_segments[test_idx], ecg_segments[test_idx])
 
-    train_loader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True, drop_last=True)
+    train_loader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=cfg.batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=cfg.batch_size, shuffle=False)
 
     # --------------------------------------------------------
-    # Optional self-supervised pretraining example
-    # Here we simulate transformed ECG data and pseudo-labels
+    # Self-supervised pretraining on training players only
     # --------------------------------------------------------
-    ssl_x = np.random.randn(1024, T).astype(np.float32)
-    ssl_y = np.random.randint(0, cfg.ssl_num_classes, size=(1024,))
-
-    ssl_train = SSLTransformationDataset(ssl_x[:900], ssl_y[:900])
-    ssl_val = SSLTransformationDataset(ssl_x[900:], ssl_y[900:])
+    ssl_train = TransformationRecognitionDataset(ecg_segments[final_train_idx], seed=args.seed)
+    ssl_val = TransformationRecognitionDataset(ecg_segments[val_idx], seed=args.seed + 1)
 
     ssl_train_loader = DataLoader(ssl_train, batch_size=cfg.batch_size, shuffle=True)
     ssl_val_loader = DataLoader(ssl_val, batch_size=cfg.batch_size, shuffle=False)
 
     pretrained_discriminator = ECGTransformerDiscriminator(cfg)
-    pretrained_discriminator = train_ssl_pretraining(
-        discriminator=pretrained_discriminator,
-        train_loader=ssl_train_loader,
-        val_loader=ssl_val_loader,
-        cfg=cfg,
-    )
+    if cfg.epochs_pretrain:
+        pretrained_discriminator = train_ssl_pretraining(
+            discriminator=pretrained_discriminator,
+            train_loader=ssl_train_loader,
+            val_loader=ssl_val_loader,
+            cfg=cfg,
+        )
 
     # --------------------------------------------------------
     # Build GAN model
@@ -941,11 +986,12 @@ def main():
     generator = PPGtoECGGenerator(cfg)
     discriminator = ECGTransformerDiscriminator(cfg)
 
-    discriminator = transfer_pretrained_discriminator_backbone(
-        pretrained_discriminator=pretrained_discriminator,
-        gan_discriminator=discriminator,
-        freeze_backbone=True,   # as described in fine-tuning
-    )
+    if cfg.epochs_pretrain:
+        discriminator = transfer_pretrained_discriminator_backbone(
+            pretrained_discriminator=pretrained_discriminator,
+            gan_discriminator=discriminator,
+            freeze_backbone=True,
+        )
 
     generator, discriminator, history = train_wgan_gp(
         generator=generator,
@@ -961,7 +1007,7 @@ def main():
     generator.eval()
     with torch.no_grad():
         sample_ppg, sample_ecg = next(iter(test_loader))
-        sample_ppg = sample_ppg.to(device)
+        sample_ppg = sample_ppg.to(cfg.device)
         fake_ecg = generator(sample_ppg)
         print("Sample PPG shape:", sample_ppg.shape)
         print("Generated ECG shape:", fake_ecg.shape)

@@ -30,7 +30,6 @@ from dataclasses import dataclass
 from typing import Dict, Tuple, List, Optional
 
 import numpy as np
-import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 
 import torch
@@ -481,6 +480,8 @@ def plot_transformations(
     """
     Plot one example of each transformation for a given ECG signal.
     """
+    import matplotlib.pyplot as plt
+
     examples = generate_all_transformations_for_signal(
         x,
         include_original=include_original,
