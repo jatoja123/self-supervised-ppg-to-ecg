@@ -6,4 +6,5 @@
 /REVIEW.md
 /.idea/self-supervised-ppg-to-ecg.iml
 /.idea/vcs.xml
-/data/who-is-alyx-2.1/
+
+/data/
