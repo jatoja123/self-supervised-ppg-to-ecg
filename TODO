@@ -1,0 +1,11 @@
+﻿- plik konfiguracji na podstawie ModelConfig
+- zmniejszyć wymiary, spróbować uruchomić 1 epokę
+- uruchamiać na mniejszych danych?
+- gdzie zapisują się wyniki ogarnąć?
+- weights and biases - narzędzie; potem może sprawdzić
+- dvc też ma obsługę konfiguracji - ale się nie sprawdza
+- udostępnić projekt git
+
+Na następne spotkanie
+- ogarnąć kod i co się tam dzieje
+- umieć wytłumaczyć kod mniej więcej i moje zmiany
