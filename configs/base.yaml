@@ -1,0 +1,63 @@
+﻿
+# signal
+sampling_rate: 130                  # Częstotliwość próbkowania sygnałów (Hz)
+in_channels: 1                     # Liczba kanałów wejściowych (PPG)
+out_channels: 1                    # Liczba kanałów wyjściowych (ECG)
+
+# UNet encoder/decoder depth
+num_unet_layers: 4                 # Liczba poziomów U-Net (obecnie ustalona w kodzie)
+base_channels: 8                   # Bazowa liczba kanałów konwolucyjnych U-Net
+
+# transformer bottleneck in generator
+gen_transformer_dim: 16            # Wymiar reprezentacji tokenów transformera
+gen_transformer_layers: 2          # Liczba warstw transformera generatora
+gen_transformer_heads: 2           # Liczba głów mechanizmu attention
+gen_transformer_mlp_ratio: 4       # Mnożnik rozmiaru warstwy ukrytej MLP
+gen_transformer_dropout: 0.1       # Prawdopodobieństwo dropout (10%)
+max_tokens: 4096                   # Maksymalna liczba pozycji tokenów generatora
+
+# discriminator CNN encoder
+disc_conv_channels: [64, 128, 256] # Liczba kanałów w kolejnych warstwach CNN
+disc_conv_kernels: [65, 33, 17]    # Rozmiary jąder konwolucyjnych
+disc_conv_stride: 1                # Krok przesuwania filtrów konwolucyjnych
+
+# discriminator transformer
+disc_model_dim: 256                # Wymiar reprezentacji tokenów dyskryminatora
+disc_transformer_layers: 2         # Liczba warstw transformera dyskryminatora
+disc_transformer_heads: 2          # Liczba głów mechanizmu attention
+disc_ffn_dim: 512                  # Docelowy rozmiar warstwy ukrytej FFN
+disc_dropout: 0.1                  # Prawdopodobieństwo dropout (10%)
+disc_max_tokens: 8192              # Maksymalna liczba pozycji tokenów (w tym CLS)
+
+# self-supervised pretraining head
+ssl_hidden_dim1: 128               # Rozmiar pierwszej warstwy ukrytej SSL
+ssl_hidden_dim2: 128               # Rozmiar drugiej warstwy ukrytej SSL
+ssl_num_classes: 6                 # Liczba klas transformacji sygnału ECG
+
+# fine-tuning discriminator head
+finetune_hidden_dim1: 512          # Rozmiar pierwszej warstwy głowy fine-tuning
+finetune_hidden_dim2: 256          # Rozmiar drugiej warstwy głowy fine-tuning
+
+# training
+batch_size: 128                    # Liczba przykładów przetwarzanych jednocześnie
+epochs_pretrain: 90                # Maksymalna liczba epok pretrainingu SSL
+epochs_gan: 90                     # Maksymalna liczba epok treningu GAN
+lr_generator: 0.0001               # Współczynnik uczenia generatora
+lr_discriminator: 0.0001           # Współczynnik uczenia dyskryminatora
+betas: [0.5, 0.9]                  # Współczynniki średnich kroczących optymalizatora Adam
+lambda_gp: 10.0                    # Waga kary gradientowej (WGAN-GP)
+lambda_l1: 0.0                    # Waga błędu rekonstrukcji L1 generatora
+n_critic: 5                        # Liczba aktualizacji krytyka na jedną generatora
+early_stopping_patience: 12        # Liczba epok bez poprawy przed zatrzymaniem
+
+# data & dataset
+data_loader: "alyx_data:load_alyx_segments" # Funkcja odpowiedzialna za wczytywanie danych
+data_dir: null                     # Ścieżka do danych (null = domyślna)
+window_seconds: 4.0                # Długość pojedynczego okna sygnału (sekundy)
+overlap: 0.2                       # Nakładanie się kolejnych okien (20%)
+held_out_subject: null             # ID uczestnika testowego (null = automatyczny wybór)
+
+# environment & execution
+device: "auto"                     # Automatyczny wybór GPU (CUDA) lub CPU
+seed: 42                           # Ziarno losowości dla powtarzalności wyników
+check_data: false                  # Tylko sprawdzenie danych, bez treningu modelu

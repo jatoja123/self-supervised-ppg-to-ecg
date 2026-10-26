@@ -1,0 +1,64 @@
+﻿
+# signal
+sampling_rate: 128                  # Częstotliwość próbkowania (Hz)
+in_channels: 1                     # Kanały wejściowe PPG
+out_channels: 1                    # Kanały wyjściowe ECG
+
+# UNet encoder/decoder depth
+num_unet_layers: 4                 # Liczba poziomów U-Net (stała w obecnym kodzie)
+base_channels: 4                   # Bazowa liczba kanałów CNN
+
+# transformer bottleneck in generator
+gen_transformer_dim: 8             # Wymiar tokenów transformera
+gen_transformer_layers: 1          # Liczba warstw transformera
+gen_transformer_heads: 1           # Liczba głów attention
+gen_transformer_mlp_ratio: 2       # Mnożnik wymiaru MLP
+gen_transformer_dropout: 0.1       # Dropout
+max_tokens: 512                    # Limit pozycji tokenów generatora
+
+# discriminator CNN encoder
+disc_conv_channels: [8, 16, 32]    # Kanały kolejnych warstw CNN
+disc_conv_kernels: [17, 9, 5]      # Rozmiary jąder konwolucji
+disc_conv_stride: 2                # Krok konwolucji (redukuje liczbę tokenów)
+
+# discriminator transformer
+disc_model_dim: 32                 # Wymiar tokenów dyskryminatora
+disc_transformer_layers: 1         # Liczba warstw transformera
+disc_transformer_heads: 1          # Liczba głów attention
+disc_ffn_dim: 64                   # Wymiar warstwy FFN
+disc_dropout: 0.1                  # Dropout
+disc_max_tokens: 1024              # Limit pozycji tokenów dyskryminatora
+
+# self-supervised pretraining head
+ssl_hidden_dim1: 32                # Pierwsza warstwa SSL
+ssl_hidden_dim2: 32                # Druga warstwa SSL
+ssl_num_classes: 6                 # Liczba klas transformacji ECG
+
+# fine-tuning discriminator head
+finetune_hidden_dim1: 64           # Pierwsza warstwa fine-tuning
+finetune_hidden_dim2: 32           # Druga warstwa fine-tuning
+
+# training
+batch_size: 4                      # Przykłady w batchu
+epochs_pretrain: 0                 # 0 = pominięcie SSL
+epochs_gan: 10                     # Maksymalna liczba epok GAN
+lr_generator: 0.0001               # Learning rate generatora
+lr_discriminator: 0.0001           # Learning rate dyskryminatora
+betas: [0.5, 0.9]                  # Parametry optymalizatora Adam
+lambda_gp: 10.0                    # Waga gradient penalty
+lambda_l1: 0.0                    # Waga błędu rekonstrukcji
+n_critic: 1                        # Aktualizacje krytyka na krok generatora
+early_stopping_patience: 3         # Epoki bez poprawy przed zatrzymaniem
+
+# data & dataset
+data_loader: "alyx_data:load_alyx_segments" # Loader danych
+data_dir: null                     # Domyślny katalog danych
+window_seconds: 4.0                # Długość okna (sekundy)
+overlap: 0.2                       # Nakładanie okien (20%)
+held_out_subject: null             # Automatyczny wybór uczestnika testowego
+data_fraction: 0.25                # Wybierz 25% uczestników
+
+# environment & execution
+device: "cpu"                      # Trening na procesorze
+seed: 42                           # Ziarno losowości
+check_data: false                  # Uruchomienie treningu

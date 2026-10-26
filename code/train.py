@@ -30,13 +30,15 @@ from __future__ import annotations
 
 import os
 import math
+import inspect
+import yaml
 import copy
 import random
 import argparse
 from importlib import import_module
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict, Tuple, List, Union
 
 import numpy as np
 
@@ -88,8 +90,8 @@ class ModelConfig:
     max_tokens: int = 4096
 
     # discriminator CNN encoder
-    disc_conv_channels: Tuple[int, int, int] = (64, 128, 256)
-    disc_conv_kernels: Tuple[int, int, int] = (65, 33, 17)
+    disc_conv_channels: Tuple[int, ...] = (64, 128, 256)
+    disc_conv_kernels: Tuple[int, ...] = (65, 33, 17)
     disc_conv_stride: int = 1
 
     # discriminator transformer
@@ -121,7 +123,52 @@ class ModelConfig:
     n_critic: int = 5
     early_stopping_patience: int = 12
 
+    # data & dataset
+    data_loader: str = "alyx_data:load_alyx_segments"
+    data_dir: Optional[Union[Path, str]] = None
+    data_fraction: float = 1.0  # Fraction of SUBJECTS to use, NOT fraction of windows
+    window_seconds: float = 4.0
+    overlap: float = 0.2
+    held_out_subject: Optional[str] = None
+
+    # environment & execution
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    seed: int = 42
+    check_data: bool = False
+
+    def __post_init__(self):
+        if not isinstance(self.data_fraction, (int, float)) or not math.isfinite(self.data_fraction) or not 0 < self.data_fraction <= 1:
+            raise ValueError("data_fraction must be in (0, 1], e.g. 0.25")
+        # Konwersja list z YAML-a na tuple
+        if isinstance(self.disc_conv_channels, list):
+            self.disc_conv_channels = tuple(self.disc_conv_channels)
+        if isinstance(self.disc_conv_kernels, list):
+            self.disc_conv_kernels = tuple(self.disc_conv_kernels)
+        if isinstance(self.betas, list):
+            self.betas = tuple(self.betas)
+
+        # Konwersja data_dir ze str na Path (jeśli podano)
+        if self.data_dir is not None:
+            self.data_dir = Path(self.data_dir)
+
+        # Obsługa dynamicznego przydzielania urządzenia
+        if self.device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        elif self.device == "cuda" and not torch.cuda.is_available():
+            self.device = "cpu"
+
+    @classmethod
+    def read_file(cls, filename: str = "base.yaml", config_dir: str = "configs") -> "ModelConfig":
+        """Wczytuje plik konfiguracyjny YAML z podanego katalogu (domyślnie 'configs/')."""
+        file_path = Path(config_dir) / filename
+
+        if not file_path.exists():
+            raise FileNotFoundError(f"Nie znaleziono pliku konfiguracji: {file_path.resolve()}")
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+
+        return cls(**data)
 
 
 CFG = ModelConfig()
@@ -717,6 +764,7 @@ def train_wgan_gp(
     }
 
     for epoch in range(cfg.epochs_gan):
+        print(f"== Epoch {epoch + 1}/{cfg.epochs_gan}")
         generator.train()
         discriminator.train()
 
@@ -840,26 +888,108 @@ def loso_split(subject_ids: np.ndarray, held_out_subject):
 # Dataset-independent loading and training entry point
 # ============================================================
 
-def load_training_data(loader_spec: str, data_dir: Optional[Path], *,
-                       sampling_rate: int, window_seconds: float, overlap_ratio: float):
-    """Call a module:function loader returning normalized PPG, ECG and subject IDs.
+def _choose_subject_subset(available_subjects, data_fraction: float, seed: int,
+                           held_out_subject=None):
+    """Draw a reproducible subject subset, always including the held-out subject.
 
-    Loaders own file formats, synchronization, resampling, filtering and windowing.
-    They receive data_dir (possibly None), sampling_rate, window_seconds and
-    overlap_ratio as keyword arguments. Signals must be finite arrays (N, T)
-    normalized to [-1, 1], with one subject ID per paired window.
+    Select at least three participants for train/validation/test. The held-out
+    subject is selected from the FULL list (or supplied explicitly), making
+    the test participant stable when changing data_fraction.
+    """
+    unique = sorted(set(available_subjects), key=lambda x: (str(x).isdigit() is False,
+                                                            int(str(x)) if str(x).isdigit() else str(x)))
+    if len(unique) < 3:
+        raise ValueError("At least three subjects are required for train/validation/test")
+
+    if held_out_subject is None:
+        test_subject = unique[0]
+    else:
+        matches = [s for s in unique if str(s) == str(held_out_subject)]
+        if not matches:
+            raise ValueError(f"held_out_subject={held_out_subject} not found in available subjects")
+        test_subject = matches[0]
+
+    target = min(len(unique), max(3, math.ceil(len(unique) * data_fraction)))
+    others = [s for s in unique if str(s) != str(test_subject)]
+    rng = np.random.default_rng(seed)
+    if target < len(unique):
+        picked = rng.choice(len(others), size=target - 1, replace=False)
+        selected = [test_subject] + [others[int(i)] for i in picked]
+    else:
+        selected = unique
+    return sorted(selected, key=lambda x: str(x)), test_subject
+
+
+def _alyx_participant_folders(data_dir: Optional[Path]):
+    """Discover subject directories without opening PPG/ECG files.
+
+    This is only a convenience for the 'who-is-alyx' directory layout.
+    Other loaders may expose their own subject-selection interface.
+    """
+    project_root = Path(__file__).resolve().parent.parent
+    candidates = (
+        [Path(data_dir)] if data_dir is not None else [
+            Path.cwd() / "data" / "who-is-alyx",
+            Path.cwd() / "data" / "who-is-alyx-2.1",
+            project_root / "data" / "who-is-alyx",
+            project_root / "data" / "who-is-alyx-2.1",
+        ]
+    )
+    for root in candidates:
+        players_dir = root if root.name == "players" else root / "players"
+        if players_dir.is_dir():
+            folder_names = [d.name for d in players_dir.iterdir() if d.is_dir()]
+            if folder_names:
+                return [int(name) if name.isdecimal() else name for name in folder_names]
+    return None
+
+
+def load_training_data(loader_spec: str, data_dir: Optional[Path], *,
+                       sampling_rate: int, window_seconds: float, overlap_ratio: float,
+                       data_fraction: float = 1.0, seed: int = 42,
+                       held_out_subject=None):
+    """Return paired PPG/ECG windows from a reproducible fraction of SUBJECTS.
+
+    If the data loader accepts 'selected_subjects', only those participants
+    are read (provided it applies the filter before loading JSON files).
+    Existing loaders without the argument still work, but selection occurs
+    AFTER loading and therefore does not save preprocessing time/peak RAM.
     """
     if sampling_rate <= 0 or not np.isfinite(window_seconds) or window_seconds <= 0:
         raise ValueError("Sampling rate and window length must be positive")
     if not 0 <= overlap_ratio < 1:
         raise ValueError("Overlap must satisfy 0 <= overlap < 1")
+    if not 0 < data_fraction <= 1:
+        raise ValueError("data_fraction must be in (0, 1]")
+
     module_name, separator, function_name = loader_spec.partition(":")
     if not separator or not module_name or not function_name:
         raise ValueError("Data loader must use module:function syntax")
     loader = getattr(import_module(module_name), function_name)
-    ppg, ecg, subject_ids = loader(
+
+    loader_kwargs = dict(
         data_dir=data_dir, sampling_rate=sampling_rate,
-        window_seconds=window_seconds, overlap_ratio=overlap_ratio)
+        window_seconds=window_seconds, overlap_ratio=overlap_ratio
+    )
+
+    # Optimal path: select participants BEFORE file I/O, if the loader supports it.
+    filtered_before_load = False
+    if data_fraction < 1.0:
+        try:
+            supports_subject_filter = "selected_subjects" in inspect.signature(loader).parameters
+        except (TypeError, ValueError):
+            supports_subject_filter = False
+        if supports_subject_filter:
+            folder_subjects = _alyx_participant_folders(data_dir)
+            if folder_subjects is not None:
+                selected, test_subject = _choose_subject_subset(
+                    folder_subjects, data_fraction, seed, held_out_subject)
+                loader_kwargs["selected_subjects"] = selected
+                filtered_before_load = True
+                print(f"Selected {len(selected)}/{len(folder_subjects)} participants "
+                      f"before loading: {selected} (test: {test_subject})")
+
+    ppg, ecg, subject_ids = loader(**loader_kwargs)
     ppg, ecg = np.asarray(ppg, dtype=np.float32), np.asarray(ecg, dtype=np.float32)
     subject_ids = np.asarray(subject_ids)
     if ppg.ndim != 2 or ecg.shape != ppg.shape or not len(ppg) or ppg.shape[1] < 16:
@@ -870,6 +1000,24 @@ def load_training_data(loader_spec: str, data_dir: Optional[Path], *,
         raise ValueError("Loader returned non-finite PPG/ECG samples")
     if max(np.max(np.abs(ppg)), np.max(np.abs(ecg))) > 1.00001:
         raise ValueError("Loader must normalize PPG/ECG to [-1, 1]")
+
+    if data_fraction < 1.0 and not filtered_before_load:
+        print("WARNING: data loader does not support pre-loading subject selection "
+              "(or participant directories could not be found). Loading all "
+              "participants first; applying data_fraction to the returned arrays. "
+              "To save RAM/I/O, add 'selected_subjects=None' to the data loader "
+              "and skip unselected directories BEFORE reading JSON files.")
+        selected, test_subject = _choose_subject_subset(
+            np.unique(subject_ids).tolist(), data_fraction, seed, held_out_subject)
+        mask = np.isin(subject_ids.astype(str), [str(s) for s in selected])
+        ppg, ecg, subject_ids = ppg[mask], ecg[mask], subject_ids[mask]
+        print(f"Selected {len(selected)} participants (test: {test_subject}): {selected}")
+
+    if len(np.unique(subject_ids)) < 3:
+        raise ValueError("Not enough participants with usable data; need at least 3")
+
+    print(f"Dataset after filtering: {len(subject_ids)} windows, "
+          f"{len(np.unique(subject_ids))} participants")
     return ppg, ecg, subject_ids
 
 
@@ -917,41 +1065,27 @@ class TransformationRecognitionDataset(Dataset):
             np.random.set_state(state)
         return torch.from_numpy(transformed.copy()).unsqueeze(0), torch.tensor(label, dtype=torch.long)
 
-
+CONFIG = "lite.yaml"
 def main():
-    parser = argparse.ArgumentParser(description="Train PPG-to-ECG using a dataset loader")
-    parser.add_argument("--data-loader", default="alyx_data:load_alyx_segments",
-                        help="Loader as module:function (default: alyx_data:load_alyx_segments)")
-    parser.add_argument("--data-dir", type=Path, help="Dataset root; defaults are defined by the loader")
-    parser.add_argument("--sampling-rate", type=int, default=130)
-    parser.add_argument("--window-seconds", type=float, default=4.0)
-    parser.add_argument("--overlap", type=float, default=0.2)
-    parser.add_argument("--held-out-subject")
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--epochs-pretrain", type=int, default=90, help="0 skips SSL pretraining")
-    parser.add_argument("--epochs-gan", type=int, default=90)
-    parser.add_argument("--device", default=CFG.device)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--check-data", action="store_true", help="Load and check splits without training")
-    args = parser.parse_args()
-    if args.batch_size < 1 or min(args.epochs_pretrain, args.epochs_gan) < 0:
-        parser.error("Batch size must be positive and epoch counts nonnegative")
-    set_seed(args.seed)
-    cfg = ModelConfig(sampling_rate=args.sampling_rate, batch_size=args.batch_size, epochs_pretrain=args.epochs_pretrain,
-                      epochs_gan=args.epochs_gan, device=args.device)
+    cfg = ModelConfig.read_file(CONFIG)
+    print("Read config", CONFIG, "with seed", cfg.seed)
+    set_seed(cfg.seed)
     try:
+        print("Loading data")
         ppg_segments, ecg_segments, subject_ids = load_training_data(
-            args.data_loader, args.data_dir, sampling_rate=cfg.sampling_rate,
-            window_seconds=args.window_seconds, overlap_ratio=args.overlap)
+            cfg.data_loader, cfg.data_dir, sampling_rate=cfg.sampling_rate,
+            window_seconds=cfg.window_seconds, overlap_ratio=cfg.overlap,
+            data_fraction=cfg.data_fraction, seed=cfg.seed,
+            held_out_subject=cfg.held_out_subject)
         window_size = ppg_segments.shape[1]
         if window_size + 1 > cfg.disc_max_tokens or window_size // 16 > cfg.max_tokens:
             raise ValueError("Window exceeds model positional embedding capacity")
-        final_train_idx, val_idx, test_idx = split_subjects(subject_ids, args.held_out_subject, args.seed)
+        final_train_idx, val_idx, test_idx = split_subjects(subject_ids, cfg.held_out_subject, cfg.seed)
     except (FileNotFoundError, ValueError, KeyError, ImportError, AttributeError, TypeError) as exc:
-        parser.error(str(exc))
+        raise RuntimeError(f"Data loading or splitting failed: {exc}") from exc
     for name, indices in (("train", final_train_idx), ("validation", val_idx), ("test", test_idx)):
         print(f"{name}: {len(indices)} windows, subjects {np.unique(subject_ids[indices]).tolist()}")
-    if args.check_data:
+    if cfg.check_data:
         return
 
     train_dataset = PairedPPGECGDataset(ppg_segments[final_train_idx], ecg_segments[final_train_idx])
@@ -965,14 +1099,15 @@ def main():
     # --------------------------------------------------------
     # Self-supervised pretraining on training players only
     # --------------------------------------------------------
-    ssl_train = TransformationRecognitionDataset(ecg_segments[final_train_idx], seed=args.seed)
-    ssl_val = TransformationRecognitionDataset(ecg_segments[val_idx], seed=args.seed + 1)
+    ssl_train = TransformationRecognitionDataset(ecg_segments[final_train_idx], seed=cfg.seed)
+    ssl_val = TransformationRecognitionDataset(ecg_segments[val_idx], seed=cfg.seed + 1)
 
     ssl_train_loader = DataLoader(ssl_train, batch_size=cfg.batch_size, shuffle=True)
     ssl_val_loader = DataLoader(ssl_val, batch_size=cfg.batch_size, shuffle=False)
 
     pretrained_discriminator = ECGTransformerDiscriminator(cfg)
     if cfg.epochs_pretrain:
+        print("= Self-supervised pretraining on training players only")
         pretrained_discriminator = train_ssl_pretraining(
             discriminator=pretrained_discriminator,
             train_loader=ssl_train_loader,
@@ -983,6 +1118,7 @@ def main():
     # --------------------------------------------------------
     # Build GAN model
     # --------------------------------------------------------
+    print("= Build GAN model")
     generator = PPGtoECGGenerator(cfg)
     discriminator = ECGTransformerDiscriminator(cfg)
 

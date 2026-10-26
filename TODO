@@ -1,11 +1,36 @@
-﻿- plik konfiguracji na podstawie ModelConfig
-- zmniejszyć wymiary, spróbować uruchomić 1 epokę
+﻿- zmniejszyć wymiary, spróbować uruchomić 1 epokę
 - uruchamiać na mniejszych danych?
 - gdzie zapisują się wyniki ogarnąć?
-- weights and biases - narzędzie; potem może sprawdzić
-- dvc też ma obsługę konfiguracji - ale się nie sprawdza
 - udostępnić projekt git
 
 Na następne spotkanie
 - ogarnąć kod i co się tam dzieje
 - umieć wytłumaczyć kod mniej więcej i moje zmiany
+
+Co zrobiłem:
+- niektóre pliki nie miały rozszerzenia .py, poprawiłem
+- train.py pokazywał ładowanie danych jako losowe okna PPG/EKG, bez wczytywania ich znikąd
+- pobrałem dane who-is-alyx, zrobiłem ich wczytywanie, matchowanie i podział na okna z pokryciem 20%
+- chat wykrył błąd: zastąpił rekurencyjną odległość Frecheta wersją iteracyjną - ryzyko wywalenia się kodu
+- Chat proponował mi dodanie l1_loss do straty generatora, ale nie jest to uwzględniane w publikacji - można sprawdzić wpływ. Ustawiłem na 0
+- zreplikowałem pre-processing na podstawie artykułu, którego nie było - plik data.py pokazywał wczytywanie danych w innym podziale folderów/formacie i po preprocessingu
+- dodałem wczytywanie konfiguracji z pliku YAML, przykładową konfigurację lite i przekopiowaną ichniejszą (base)
+- możliwość zmniejszenia danych - data_fraction - wybierz tylko jakiś % uczestników
+
+Loss i metryki
+- W pierwszym etapie SSL jest cross entropy loss bo model przyporządkowuje transformację sygnału do typu transformacji 0/1.
+Dla mnie ryzykowna jest ta 'intuicja' w pre-trenowaniu modelu. Można sprawdzić czy to naprawdę pomaga, dla mniejszego modelu/danych.
+- Walidacja to 10-fold cross-validation
+- W drugim kroku generator ma Wasserstein loss czyli po prostu ocena dyskryminatora. Potencjalny problem: słaba odwzorowywalność spowrotem na PPG
+- W drugim kroku dyskryminator ma Wassersterin loss czyli
+D(fake) - D(real) + Gradient penalty (ograniczna nadmierne zmiany, wpsiera stabilność)
+Czyli jeśli Dyskryminator ocenia Fake jako prawdziwy lub real jako fałszywy to duży loss.
+- Podczas treningu oprócz start walidowano 10% danych
+- Zastosowano Early stopping patience=12, z użyciem L1_loss na walidacji (ale nie ma tego w Loss_fn)
+Czyli bezwzględna różnica między sygnałami. Jeśli nasz sygnał zbyt się rozjedzie (w dowolnej osi) - zatrzymujemy uczenie.
+- Metryki testów: RMSE; Pearson; Frechet Distance; MAE HR - wyznaczanie tętna z fake/real sygnału EKG
+intuicja:
+RMSE - dokładność rekonstrukcji
+Pearson - zgodność skali, amplitudy
+Fretchet D - podobny kształt krzywych
+MAE HR - poprawność fizjologiczna

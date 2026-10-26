@@ -11,7 +11,7 @@ import json
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -77,13 +77,22 @@ def read_alyx_signal(path: Path, *, native_sampling_rate: Optional[float] = None
     return timestamps, values[unique_indices]
 
 
-def load_alyx_segments(data_dir: Optional[Path] = None, *, sampling_rate: int = 130,
-                       window_seconds: float = 4.0, overlap_ratio: float = 0.2):
-
+def load_alyx_segments(
+    data_dir: Optional[Path] = None,
+    *,
+    sampling_rate: int = 130,
+    window_seconds: float = 4.0,
+    overlap_ratio: float = 0.2,
+    selected_subjects: Optional[Sequence[Union[int, str]]] = None,
+):
     """Align sessions on a common clock, filter continuous runs, then window.
 
     Windows never cross sessions or gaps exceeding three native sample periods.
     ECG is recorded at 130 Hz and Empatica PPG at 64 Hz.
+
+    selected_subjects: optional participant IDs to load. When provided,
+    unselected participants are skipped BEFORE their ECG/PPG JSON files are read.
+    The caller (train.py) selects participant IDs using data_fraction and seed.
     """
     data_dir = default_data_dir() if data_dir is None else Path(data_dir)
     window_size = int(round(window_seconds * sampling_rate))
@@ -92,10 +101,22 @@ def load_alyx_segments(data_dir: Optional[Path] = None, *, sampling_rate: int = 
     players = data_dir / "players"
     if not players.is_dir():
         raise FileNotFoundError(f"Missing dataset directory: {players}")
+
+    # None = everyone; otherwise compare IDs as strings to support both int and str IDs.
+    allowed_subjects = None if selected_subjects is None else {str(s) for s in selected_subjects}
+    if allowed_subjects is not None and not allowed_subjects:
+        raise ValueError("selected_subjects is empty; provide participant IDs or None")
+
     ppg_parts, ecg_parts, subjects = [], [], []
     pairs_found = 0
     for ecg_path in sorted(players.glob("*/*/polar-h10/ECG.json")):
         session_dir = ecg_path.parent.parent
+        subject_id = session_dir.parent.name
+
+        # IMPORTANT: skip non-selected subjects BEFORE opening the ECG/PPG JSON files.
+        if allowed_subjects is not None and subject_id not in allowed_subjects:
+            continue
+
         ppg_path = session_dir / "empatica" / "PPG.json"
         if not ppg_path.is_file():
             continue
@@ -130,13 +151,19 @@ def load_alyx_segments(data_dir: Optional[Path] = None, *, sampling_rate: int = 
             ecg_windows, ppg_windows = ecg_windows[usable], ppg_windows[usable]
             if not len(ecg_windows):
                 continue
+
             def normalize(windows):
                 low = windows.min(axis=1, keepdims=True)
                 return (2 * (windows - low) / np.ptp(windows, axis=1, keepdims=True) - 1).astype(np.float32)
+
             ecg_parts.append(normalize(ecg_windows))
             ppg_parts.append(normalize(ppg_windows))
-            subjects.extend([int(session_dir.parent.name)] * len(ecg_windows))
+            subjects.extend([int(subject_id)] * len(ecg_windows))
     if not pairs_found:
+        if allowed_subjects is not None:
+            raise FileNotFoundError(
+                f"No PPG.json / ECG.json pairs for selected subjects {sorted(allowed_subjects)} in {players}"
+            )
         raise FileNotFoundError(
             f"No PPG.json / ECG.json pairs in {players}. If only *.dvc files exist, "
             f"retrieve the physiological files with DVC from {data_dir} before training."
