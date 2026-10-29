@@ -1,13 +1,12 @@
-﻿- zmniejszyć wymiary, spróbować uruchomić 1 epokę
-- uruchamiać na mniejszych danych?
-- gdzie zapisują się wyniki ogarnąć?
+﻿### TODO
+- nie zapisywano żadnych metryk w czasie treningu do dalszej analizy / porównania modeli - dodać
+- Jak porównywać wyniki i modele - narzędzie? 
+- nie zapisuje się najlepszy model - dodać? jest to sensowne?
+- spróbować dodać inne dane
 - udostępnić projekt git
+- sprawdzić - weights and biases
 
-Na następne spotkanie
-- ogarnąć kod i co się tam dzieje
-- umieć wytłumaczyć kod mniej więcej i moje zmiany
-
-Co zrobiłem:
+## Co zrobiłem:
 - niektóre pliki nie miały rozszerzenia .py, poprawiłem
 - train.py pokazywał ładowanie danych jako losowe okna PPG/EKG, bez wczytywania ich znikąd
 - pobrałem dane who-is-alyx, zrobiłem ich wczytywanie, matchowanie i podział na okna z pokryciem 20%
@@ -17,7 +16,7 @@ Co zrobiłem:
 - dodałem wczytywanie konfiguracji z pliku YAML, przykładową konfigurację lite i przekopiowaną ichniejszą (base)
 - możliwość zmniejszenia danych - data_fraction - wybierz tylko jakiś % uczestników
 
-Loss i metryki
+## Loss i metryki
 - W pierwszym etapie SSL jest cross entropy loss bo model przyporządkowuje transformację sygnału do typu transformacji 0/1.
 Dla mnie ryzykowna jest ta 'intuicja' w pre-trenowaniu modelu. Można sprawdzić czy to naprawdę pomaga, dla mniejszego modelu/danych.
 - Walidacja to 10-fold cross-validation
@@ -26,11 +25,34 @@ Dla mnie ryzykowna jest ta 'intuicja' w pre-trenowaniu modelu. Można sprawdzić
 D(fake) - D(real) + Gradient penalty (ograniczna nadmierne zmiany, wpsiera stabilność)
 Czyli jeśli Dyskryminator ocenia Fake jako prawdziwy lub real jako fałszywy to duży loss.
 - Podczas treningu oprócz start walidowano 10% danych
-- Zastosowano Early stopping patience=12, z użyciem L1_loss na walidacji (ale nie ma tego w Loss_fn)
-Czyli bezwzględna różnica między sygnałami. Jeśli nasz sygnał zbyt się rozjedzie (w dowolnej osi) - zatrzymujemy uczenie.
 - Metryki testów: RMSE; Pearson; Frechet Distance; MAE HR - wyznaczanie tętna z fake/real sygnału EKG
-intuicja:
+Intuicja:
 RMSE - dokładność rekonstrukcji
 Pearson - zgodność skali, amplitudy
 Fretchet D - podobny kształt krzywych
 MAE HR - poprawność fizjologiczna
+
+## Triki i Techniki
+- Resampling: sprowadzanie próbek z różnych danych do wspólnej częstotliwości 
+### W generatorze UNet+Transformer
+* Batch Normalization	dla CNN encodera, bottlenecka i decodera
+* Layer Normalization	dla Transformera
+* Learned positional embedding dla Transformera - czyli embeddujemy same pozycje w sekwencji
+* Dropout (0.1) w Attention i MLP Transformera
+* Skip connections w U-Net - łączy dane stare i nowe
+* Residual connections - sumuje wejście i wyjście (liczy się poprawka wejścia)
+* FUnkcja aktywacji GELU dla CNN i Transformera
+* FUnkcja aktywacji Tanh dla wyjścia Generatora
+* Early stopping patience=12, z użyciem L1_loss na walidacji (ale nie ma tego w Loss_fn)
+* Czyli bezwzględna różnica między sygnałami. Jeśli nasz sygnał zbyt się rozjedzie (w dowolnej osi) - zatrzymujemy uczenie.
+* NIE ma żadnego gradient penalty np l1/l2
+* Strata Wasserstein - TYLKO ocena dyskryminatora
+### W dyskryminatorze - CNN + Transformer
+* Dyskryminator — CNN + Transformer
+* Layer Normalization	w CNN i Transformerze (nie używa BatchNorm)
+* Dropout (0.1) w Attention i MLP Transformera
+* Residual connections w Transformerze
+* Gradient Penalty dla WGAN-GP
+* Self Supervised Learning - nauka cech EKG
+* Transfer learning + freezing (zamrożenie warstw) - Po etapie SSL
+* Strata wasserstain - różnica między oceną real a fake. Ciekawe, że sama wartość nie ma znaczenia, tylko różnica między dwoma.
