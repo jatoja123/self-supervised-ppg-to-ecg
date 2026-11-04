@@ -1,10 +1,5 @@
 ﻿### TODO
-- nie zapisywano żadnych metryk w czasie treningu do dalszej analizy / porównania modeli - dodać
-- Jak porównywać wyniki i modele - narzędzie? 
-- nie zapisuje się najlepszy model - dodać? jest to sensowne?
 - spróbować dodać inne dane
-- udostępnić projekt git
-- sprawdzić - weights and biases
 
 ## Co zrobiłem:
 - niektóre pliki nie miały rozszerzenia .py, poprawiłem
@@ -15,6 +10,9 @@
 - zreplikowałem pre-processing na podstawie artykułu, którego nie było - plik data.py pokazywał wczytywanie danych w innym podziale folderów/formacie i po preprocessingu
 - dodałem wczytywanie konfiguracji z pliku YAML, przykładową konfigurację lite i przekopiowaną ichniejszą (base)
 - możliwość zmniejszenia danych - data_fraction - wybierz tylko jakiś % uczestników
+- dodałem zapisywanie metryk do W&B - przy uczeniu dyskryminatora oraz generatora
+- dodatkowo zapisywanie konfiguracji startowej przy eksperymencie (kiedyś się na to naciąłem)
+- dodałem zapisywanie najlepszego modelu po treningu
 
 ## Loss i metryki
 - W pierwszym etapie SSL jest cross entropy loss bo model przyporządkowuje transformację sygnału do typu transformacji 0/1.

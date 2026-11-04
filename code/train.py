@@ -35,6 +35,9 @@ import yaml
 import copy
 import random
 import argparse
+import re
+from datetime import datetime
+from dataclasses import asdict
 from importlib import import_module
 from pathlib import Path
 from dataclasses import dataclass
@@ -72,6 +75,15 @@ set_seed(42)
 
 @dataclass
 class ModelConfig:
+    # Optional run name. Combined with YAML filename and timestamp in results/.
+    model_name: str = "ppg_to_ecg_gan"
+
+    # Experiment tracking:
+    wandb_enabled: bool = True
+    wandb_project: str = "ppg-to-ecg"
+    wandb_entity: Optional[str] = None  # Team/account; None = default account
+    wandb_mode: str = "online"        # "online", "offline" or "disabled"
+
     # signal
     sampling_rate: int = 130
     in_channels: int = 1
@@ -137,6 +149,8 @@ class ModelConfig:
     check_data: bool = False
 
     def __post_init__(self):
+        if self.wandb_mode not in {"online", "offline", "disabled"}:
+            raise ValueError("wandb_mode must be 'online', 'offline' or 'disabled'")
         if not isinstance(self.data_fraction, (int, float)) or not math.isfinite(self.data_fraction) or not 0 < self.data_fraction <= 1:
             raise ValueError("data_fraction must be in (0, 1], e.g. 0.25")
         # Konwersja list z YAML-a na tuple
@@ -172,6 +186,165 @@ class ModelConfig:
 
 
 CFG = ModelConfig()
+
+
+# ============================================================
+# Experiment directory and Weights & Biases logging
+# ============================================================
+
+def _yaml_safe(value):
+    """Convert dataclass values into plain YAML types (without Python tags)."""
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _yaml_safe(v) for k, v in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_yaml_safe(v) for v in value]
+    return value
+
+
+def _run_slug(value: str) -> str:
+    """Make a readable, file-system-safe run name."""
+    return re.sub(r"[^a-zA-Z0-9_-]+", "_", value).strip("_-").lower() or "model"
+
+
+def create_run_directory(cfg: ModelConfig, config_file: str) -> Path:
+    """Create results/<model>_<config>_<timestamp>/ """
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_stem = f"{_run_slug(cfg.model_name)}_{_run_slug(Path(config_file).stem)}_{timestamp}"
+    results_root = Path("results")
+    results_root.mkdir(parents=True, exist_ok=True)
+    run_dir = results_root / run_stem
+    suffix = 2
+    while run_dir.exists():
+        run_dir = results_root / f"{run_stem}_{suffix:02d}"
+        suffix += 1
+    run_dir.mkdir(parents=True, exist_ok=False)
+
+    config_text = yaml.safe_dump(_yaml_safe(asdict(cfg)), allow_unicode=True, sort_keys=False)
+    (run_dir / "config.yaml").write_text(config_text, encoding="utf-8")
+    print(f"Experiment directory: {run_dir.resolve()}")
+    return run_dir
+
+
+def create_wandb_run(cfg: ModelConfig, run_dir: Path):
+    """Create one optional W&B run for both SSL and GAN.
+
+    Only metrics and hyperparameters are logged; raw PPG/ECG are not uploaded.
+    """
+    if not cfg.wandb_enabled:
+        return None
+    try:
+        import wandb
+    except ImportError as exc:
+        raise RuntimeError(
+            "W&B tracking is enabled. Install the SDK: python -m pip install wandb"
+        ) from exc
+
+    # Avoid publishing local filesystem paths and subject identifiers as cloud metadata.
+    run_config = _yaml_safe(asdict(cfg))
+    run_config.pop("data_dir", None)
+    run_config.pop("held_out_subject", None)
+
+    run = wandb.init(
+        project=cfg.wandb_project,
+        entity=cfg.wandb_entity,
+        name=run_dir.name,
+        dir=str(run_dir),
+        mode=cfg.wandb_mode,
+        config=run_config,
+        tags=["PPG-to-ECG", "WGAN-GP"],
+    )
+
+    # SSL and GAN restart epoch counting independently without clashing on W&B's
+    # global internal step. Log one dictionary per epoch in each stage.
+    run.define_metric("ssl_epoch")
+    run.define_metric("ssl/*", step_metric="ssl_epoch")
+    run.define_metric("gan_epoch")
+    run.define_metric("gan/*", step_metric="gan_epoch")
+    print(f"W&B logging: {cfg.wandb_mode} | project={cfg.wandb_project} | run={run.name}")
+    if cfg.wandb_mode == "online" and getattr(run, "url", None):
+        print(f"W&B dashboard: {run.url}")
+    return run
+
+
+def save_best_checkpoint(
+    run_dir: Path,
+    cfg: ModelConfig,
+    generator: nn.Module,
+    discriminator: nn.Module,
+    history: dict,
+) -> Path:
+    """Save the best validation-L1 GAN weights ONCE, after GAN training.
+
+    train_wgan_gp restores the generator and the matching critic from the best
+    validation epoch before returning. This checkpoint is for inference/model
+    loading, not full optimizer-state training resumption.
+    """
+    best_epoch = history["best_epoch"]
+    if not best_epoch:
+        raise RuntimeError("Cannot checkpoint a GAN that did not complete any epoch")
+
+    def to_cpu_state_dict(model):
+        return {name: tensor.detach().cpu().clone()
+                for name, tensor in model.state_dict().items()}
+
+    checkpoint = {
+        "model_name": cfg.model_name,
+        "config": _yaml_safe(asdict(cfg)),
+        "best_epoch": best_epoch,
+        "selection_metric": "validation_l1" if history["best_val_l1"] is not None else "last_epoch_no_validation",
+        "best_val_l1": history["best_val_l1"],
+        "generator_state_dict": to_cpu_state_dict(generator),
+        "discriminator_state_dict": to_cpu_state_dict(discriminator),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    path = run_dir / "best_model.pt"
+    temp_path = run_dir / "best_model.pt.tmp"
+    try:
+        torch.save(checkpoint, temp_path)
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+    print(f"Best GAN checkpoint: {path.resolve()} (epoch {best_epoch})")
+    return path
+
+
+def evaluate_generator(generator: nn.Module, loader: DataLoader, device: str):
+    """Compute sample-weighted L1, global RMSE and mean window-wise Pearson r."""
+    generator.eval()
+    abs_sum = sq_sum = corr_sum = 0.0
+    elements = windows = 0
+    with torch.no_grad():
+        for ppg, real_ecg in loader:
+            ppg = ppg.to(device)
+            real_ecg = real_ecg.to(device)
+            fake_ecg = generator(ppg)
+            difference = fake_ecg - real_ecg
+            abs_sum += difference.abs().sum().item()
+            sq_sum += difference.square().sum().item()
+            elements += difference.numel()
+
+            real_flat = real_ecg.reshape(real_ecg.size(0), -1)
+            fake_flat = fake_ecg.reshape(fake_ecg.size(0), -1)
+            real_centered = real_flat - real_flat.mean(dim=1, keepdim=True)
+            fake_centered = fake_flat - fake_flat.mean(dim=1, keepdim=True)
+            numerator = (real_centered * fake_centered).sum(dim=1)
+            denominator = (
+                real_centered.square().sum(dim=1) *
+                fake_centered.square().sum(dim=1)
+            ).sqrt().clamp_min(1e-12)
+            corr_sum += (numerator / denominator).sum().item()
+            windows += ppg.size(0)
+
+    if elements == 0:
+        raise ValueError("Cannot evaluate on an empty dataset")
+    return {
+        "l1": abs_sum / elements,
+        "rmse": math.sqrt(sq_sum / elements),
+        "pearson": corr_sum / windows,
+    }
 
 
 # ============================================================
@@ -659,6 +832,7 @@ def train_ssl_pretraining(
     train_loader: DataLoader,
     val_loader: DataLoader,
     cfg: ModelConfig,
+    wandb_run=None,
 ):
     device = cfg.device
     discriminator.to(device)
@@ -722,6 +896,16 @@ def train_ssl_pretraining(
             f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}"
         )
 
+        if wandb_run is not None:
+            wandb_run.log({
+                "ssl_epoch": epoch + 1,
+                "ssl/train/loss": train_loss,
+                "ssl/train/accuracy": train_acc,
+                "ssl/validation/loss": val_loss,
+                "ssl/validation/accuracy": val_acc,
+                "ssl/lr/discriminator": optimizer.param_groups[0]["lr"],
+            })
+
         should_stop = stopper.step(val_loss, discriminator)
         if should_stop:
             print("Early stopping in SSL pretraining.")
@@ -743,6 +927,7 @@ def train_wgan_gp(
     train_loader: DataLoader,
     val_loader: Optional[DataLoader],
     cfg: ModelConfig,
+    wandb_run=None,
 ):
     device = cfg.device
     generator.to(device)
@@ -756,11 +941,17 @@ def train_wgan_gp(
     )
 
     stopper = EarlyStopping(patience=cfg.early_stopping_patience, mode="min")
+    best_discriminator_state = None
+    best_epoch = None
 
     history = {
         "d_loss": [],
         "g_loss": [],
         "val_l1": [],
+        "val_rmse": [],
+        "val_pearson": [],
+        "gradient_penalty": [],
+        "wasserstein_estimate": [],
     }
 
     for epoch in range(cfg.epochs_gan):
@@ -769,7 +960,14 @@ def train_wgan_gp(
         discriminator.train()
 
         running_d = 0.0
+        running_d_base = 0.0
+        running_gp = 0.0
+        running_real_score = 0.0
+        running_fake_score = 0.0
+        critic_steps = 0
         running_g = 0.0
+        running_g_wgan = 0.0
+        running_g_l1 = 0.0
         total_batches = 0
 
         for i, (ppg, real_ecg) in enumerate(train_loader):
@@ -799,57 +997,99 @@ def train_wgan_gp(
                 d_loss.backward()
                 opt_d.step()
 
+                # Include ALL n_critic steps in the epoch averages.
+                running_d += d_loss.item()
+                running_d_base += d_loss_base.item()
+                running_gp += gp.item()
+                running_real_score += real_scores.mean().item()
+                running_fake_score += fake_scores.mean().item()
+                critic_steps += 1
+
             # --------------------------------------------------
             # Train generator
             # --------------------------------------------------
             fake_ecg = generator(ppg)
             fake_scores = discriminator(fake_ecg, mode="critic")
-            g_loss = generator_wgan_loss(fake_scores) + cfg.lambda_l1 * F.l1_loss(fake_ecg, real_ecg)
+            g_wgan = generator_wgan_loss(fake_scores)
+            g_l1 = F.l1_loss(fake_ecg, real_ecg)
+            g_loss = g_wgan + cfg.lambda_l1 * g_l1
 
             opt_g.zero_grad()
             g_loss.backward()
             opt_g.step()
 
-            running_d += d_loss.item()
             running_g += g_loss.item()
+            running_g_wgan += g_wgan.item()
+            running_g_l1 += g_l1.item()
             total_batches += 1
 
-        epoch_d = running_d / max(1, total_batches)
+        epoch_d = running_d / max(1, critic_steps)
         epoch_g = running_g / max(1, total_batches)
+        epoch_gp = running_gp / max(1, critic_steps)
+        epoch_real_score = running_real_score / max(1, critic_steps)
+        epoch_fake_score = running_fake_score / max(1, critic_steps)
+        epoch_wdist = epoch_real_score - epoch_fake_score
 
         history["d_loss"].append(epoch_d)
         history["g_loss"].append(epoch_g)
+        history["gradient_penalty"].append(epoch_gp)
+        history["wasserstein_estimate"].append(epoch_wdist)
 
-        msg = f"[GAN] Epoch {epoch+1:03d} | D Loss: {epoch_d:.4f} | G Loss: {epoch_g:.4f}"
+        step = epoch + 1
+        wandb_metrics = {
+            "gan_epoch": step,
+            "gan/loss/discriminator": epoch_d,
+            "gan/loss/discriminator_wasserstein": running_d_base / max(1, critic_steps),
+            "gan/loss/generator": epoch_g,
+            "gan/loss/generator_wasserstein": running_g_wgan / max(1, total_batches),
+            "gan/loss/generator_l1_unweighted": running_g_l1 / max(1, total_batches),
+            "gan/critic/gradient_penalty": epoch_gp,
+            "gan/critic/real_score": epoch_real_score,
+            "gan/critic/fake_score": epoch_fake_score,
+            "gan/critic/wasserstein_estimate": epoch_wdist,
+            "gan/lr/generator": opt_g.param_groups[0]["lr"],
+            "gan/lr/discriminator": opt_d.param_groups[0]["lr"],
+        }
 
-        # Optional validation: use L1 reconstruction only as monitoring
+        msg = f"[GAN] Epoch {step:03d} | D Loss: {epoch_d:.4f} | G Loss: {epoch_g:.4f}"
+
+        # Validation is for monitoring/early stopping, not for backpropagation.
         if val_loader is not None:
-            generator.eval()
-            val_l1 = 0.0
-            count = 0
-            with torch.no_grad():
-                for ppg, real_ecg in val_loader:
-                    ppg = ppg.to(device)
-                    real_ecg = real_ecg.to(device)
-                    fake_ecg = generator(ppg)
-                    loss_l1 = F.l1_loss(fake_ecg, real_ecg, reduction="mean")
-                    val_l1 += loss_l1.item() * ppg.size(0)
-                    count += ppg.size(0)
-            val_l1 /= max(1, count)
-            history["val_l1"].append(val_l1)
-            msg += f" | Val L1: {val_l1:.4f}"
-
-            should_stop = stopper.step(val_l1, generator)
-            print(msg)
-
-            if should_stop:
-                print("Early stopping in GAN training.")
-                break
+            val = evaluate_generator(generator, val_loader, device)
+            history["val_l1"].append(val["l1"])
+            history["val_rmse"].append(val["rmse"])
+            history["val_pearson"].append(val["pearson"])
+            msg += (f" | Val L1: {val['l1']:.4f}"
+                    f" | Val RMSE: {val['rmse']:.4f}"
+                    f" | Val Pearson: {val['pearson']:.4f}")
+            wandb_metrics.update({
+                "gan/validation/l1": val["l1"],
+                "gan/validation/rmse_normalized": val["rmse"],
+                "gan/validation/pearson": val["pearson"],
+            })
+            previous_best = stopper.best_value
+            should_stop = stopper.step(val["l1"], generator)
+            if stopper.best_value != previous_best:
+                # Save the critic from the SAME epoch as the best generator.
+                best_discriminator_state = copy.deepcopy(discriminator.state_dict())
+                best_epoch = step
         else:
-            print(msg)
+            should_stop = False
+
+        if wandb_run is not None:
+            wandb_run.log(wandb_metrics)
+        print(msg)
+        if should_stop:
+            print("Early stopping in GAN training.")
+            break
 
     if stopper.best_state is not None:
         generator.load_state_dict(stopper.best_state)
+        if best_discriminator_state is not None:
+            discriminator.load_state_dict(best_discriminator_state)
+
+    history["best_epoch"] = best_epoch if best_epoch is not None else len(history["g_loss"])
+    history["best_val_l1"] = stopper.best_value
 
     return generator, discriminator, history
 
@@ -1096,59 +1336,107 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=cfg.batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=cfg.batch_size, shuffle=False)
 
-    # --------------------------------------------------------
-    # Self-supervised pretraining on training players only
-    # --------------------------------------------------------
-    ssl_train = TransformationRecognitionDataset(ecg_segments[final_train_idx], seed=cfg.seed)
-    ssl_val = TransformationRecognitionDataset(ecg_segments[val_idx], seed=cfg.seed + 1)
+    run_dir = create_run_directory(cfg, CONFIG)
+    wandb_run = None
+    run_failed = True
+    try:
+        wandb_run = create_wandb_run(cfg, run_dir)
+        if wandb_run is not None:
+            wandb_run.log({
+                "data/train_windows": len(train_dataset),
+                "data/validation_windows": len(val_dataset),
+                "data/test_windows": len(test_dataset),
+                "data/train_subjects": len(np.unique(subject_ids[final_train_idx])),
+                "data/validation_subjects": len(np.unique(subject_ids[val_idx])),
+                "data/test_subjects": len(np.unique(subject_ids[test_idx])),
+            })
 
-    ssl_train_loader = DataLoader(ssl_train, batch_size=cfg.batch_size, shuffle=True)
-    ssl_val_loader = DataLoader(ssl_val, batch_size=cfg.batch_size, shuffle=False)
+        # --------------------------------------------------------
+        # Self-supervised pretraining on training players only
+        # --------------------------------------------------------
+        ssl_train = TransformationRecognitionDataset(ecg_segments[final_train_idx], seed=cfg.seed)
+        ssl_val = TransformationRecognitionDataset(ecg_segments[val_idx], seed=cfg.seed + 1)
 
-    pretrained_discriminator = ECGTransformerDiscriminator(cfg)
-    if cfg.epochs_pretrain:
-        print("= Self-supervised pretraining on training players only")
-        pretrained_discriminator = train_ssl_pretraining(
-            discriminator=pretrained_discriminator,
-            train_loader=ssl_train_loader,
-            val_loader=ssl_val_loader,
+        ssl_train_loader = DataLoader(ssl_train, batch_size=cfg.batch_size, shuffle=True)
+        ssl_val_loader = DataLoader(ssl_val, batch_size=cfg.batch_size, shuffle=False)
+
+        pretrained_discriminator = ECGTransformerDiscriminator(cfg)
+        if cfg.epochs_pretrain:
+            print("= Self-supervised pretraining on training players only")
+            pretrained_discriminator = train_ssl_pretraining(
+                discriminator=pretrained_discriminator,
+                train_loader=ssl_train_loader,
+                val_loader=ssl_val_loader,
+                cfg=cfg,
+                wandb_run=wandb_run,
+            )
+        else:
+            if wandb_run is not None:
+                wandb_run.summary["ssl/skipped"] = True
+
+        # --------------------------------------------------------
+        # Build GAN model
+        # --------------------------------------------------------
+        print("= Build GAN model")
+        generator = PPGtoECGGenerator(cfg)
+        discriminator = ECGTransformerDiscriminator(cfg)
+
+        if cfg.epochs_pretrain:
+            discriminator = transfer_pretrained_discriminator_backbone(
+                pretrained_discriminator=pretrained_discriminator,
+                gan_discriminator=discriminator,
+                freeze_backbone=True,
+            )
+
+        generator, discriminator, history = train_wgan_gp(
+            generator=generator,
+            discriminator=discriminator,
+            train_loader=train_loader,
+            val_loader=val_loader,
             cfg=cfg,
+            wandb_run=wandb_run,
         )
 
-    # --------------------------------------------------------
-    # Build GAN model
-    # --------------------------------------------------------
-    print("= Build GAN model")
-    generator = PPGtoECGGenerator(cfg)
-    discriminator = ECGTransformerDiscriminator(cfg)
-
-    if cfg.epochs_pretrain:
-        discriminator = transfer_pretrained_discriminator_backbone(
-            pretrained_discriminator=pretrained_discriminator,
-            gan_discriminator=discriminator,
-            freeze_backbone=True,
+        # Save the best validation checkpoint once, AFTER training finishes.
+        checkpoint_path = save_best_checkpoint(
+            run_dir, cfg, generator, discriminator, history
         )
+        if wandb_run is not None:
+            wandb_run.summary["checkpoint/filename"] = checkpoint_path.name
+            wandb_run.summary["checkpoint/best_epoch"] = history["best_epoch"]
+            if history["best_val_l1"] is not None:
+                wandb_run.summary["checkpoint/best_val_l1"] = history["best_val_l1"]
 
-    generator, discriminator, history = train_wgan_gp(
-        generator=generator,
-        discriminator=discriminator,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        cfg=cfg,
-    )
+        # --------------------------------------------------------
+        # Final held-out test: only after training, without updates
+        # --------------------------------------------------------
+        test_metrics = evaluate_generator(generator, test_loader, cfg.device)
+        print("[TEST] " + " | ".join(f"{key}: {value:.4f}" for key, value in test_metrics.items()))
+        if wandb_run is not None:
+            wandb_run.log({
+                "test/l1": test_metrics["l1"],
+                "test/rmse_normalized": test_metrics["rmse"],
+                "test/pearson": test_metrics["pearson"],
+            })
+            wandb_run.summary["gan/epochs_completed"] = len(history["g_loss"])
+            if history["val_l1"]:
+                wandb_run.summary["gan/best_validation_l1"] = min(history["val_l1"])
 
-    # --------------------------------------------------------
-    # Quick test forward pass
-    # --------------------------------------------------------
-    generator.eval()
-    with torch.no_grad():
-        sample_ppg, sample_ecg = next(iter(test_loader))
-        sample_ppg = sample_ppg.to(cfg.device)
-        fake_ecg = generator(sample_ppg)
-        print("Sample PPG shape:", sample_ppg.shape)
-        print("Generated ECG shape:", fake_ecg.shape)
+        # Quick test forward pass (preserved from the original script).
+        generator.eval()
+        with torch.no_grad():
+            sample_ppg, sample_ecg = next(iter(test_loader))
+            sample_ppg = sample_ppg.to(cfg.device)
+            fake_ecg = generator(sample_ppg)
+            print("Sample PPG shape:", sample_ppg.shape)
+            print("Generated ECG shape:", fake_ecg.shape)
 
-    print("Training complete.")
+        print("Training complete.")
+        print(f"This run: {run_dir}")
+        run_failed = False
+    finally:
+        if wandb_run is not None:
+            wandb_run.finish(exit_code=1 if run_failed else 0)
 
 
 if __name__ == "__main__":

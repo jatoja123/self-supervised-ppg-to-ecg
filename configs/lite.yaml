@@ -1,4 +1,10 @@
-﻿
+﻿# metadata
+model_name: "ppg_to_ecg_gan"
+wandb_enabled: true
+wandb_project: "ppg-to-ecg"
+wandb_entity: null
+wandb_mode: "online"
+
 # signal
 sampling_rate: 128                  # Częstotliwość próbkowania (Hz)
 in_channels: 1                     # Kanały wejściowe PPG
