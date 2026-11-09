@@ -1,0 +1,29 @@
+W&B logging: online | project=ppg-to-ecg | run=ppg_to_ecg_gan_lite_2026-11-04_20-09-30
+W&B dashboard: https://forge.coreweave.com/wandb/hyopplo-hoplo-lab/ppg-to-ecg/runs/7bawx8kx
+= Build GAN model
+== Epoch 1/10
+[GAN] Epoch 001 | D Loss: -0.1660 | G Loss: 0.7458 | Val L1: 0.4726 | Val RMSE: 0.5926 | Val Pearson: -0.0034
+== Epoch 2/10
+[GAN] Epoch 002 | D Loss: -0.0447 | G Loss: 0.8350 | Val L1: 0.4752 | Val RMSE: 0.5945 | Val Pearson: -0.0017
+== Epoch 3/10
+[GAN] Epoch 003 | D Loss: -0.0253 | G Loss: 0.7804 | Val L1: 0.4453 | Val RMSE: 0.5625 | Val Pearson: 0.0046
+== Epoch 4/10
+[GAN] Epoch 004 | D Loss: -0.0150 | G Loss: 0.6135 | Val L1: 0.4609 | Val RMSE: 0.5807 | Val Pearson: 0.0014
+== Epoch 5/10
+[GAN] Epoch 005 | D Loss: -0.0224 | G Loss: 0.5813 | Val L1: 0.5184 | Val RMSE: 0.6406 | Val Pearson: 0.0005
+== Epoch 6/10
+[GAN] Epoch 006 | D Loss: -0.0085 | G Loss: 0.4758 | Val L1: 0.4573 | Val RMSE: 0.5741 | Val Pearson: 0.0001
+== Epoch 7/10
+[GAN] Epoch 007 | D Loss: -0.0334 | G Loss: 0.5304 | Val L1: 0.4809 | Val RMSE: 0.6001 | Val Pearson: -0.0003
+== Epoch 8/10
+[GAN] Epoch 008 | D Loss: -0.0401 | G Loss: 0.5691 | Val L1: 0.4808 | Val RMSE: 0.6014 | Val Pearson: 0.0016
+== Epoch 9/10
+[GAN] Epoch 009 | D Loss: -0.0329 | G Loss: 0.5887 | Val L1: 0.4662 | Val RMSE: 0.5870 | Val Pearson: -0.0012
+== Epoch 10/10
+[GAN] Epoch 010 | D Loss: -0.0420 | G Loss: 0.6600 | Val L1: 0.4688 | Val RMSE: 0.5874 | Val Pearson: -0.0013
+Best GAN checkpoint: C:\Users\fikul\Documents\PWR\Emognition\self-supervised-ppg-to-ecg\results\ppg_to_ecg_gan_lite_2026-11-04_20-09-30\best_model.pt (epoch 3)
+[TEST] l1: 0.3231 | rmse: 0.4350 | pearson: 0.0002
+Sample PPG shape: torch.Size([4, 1, 512])
+Generated ECG shape: torch.Size([4, 1, 512])
+Training complete.
+This run: results\ppg_to_ecg_gan_lite_2026-11-04_20-09-30

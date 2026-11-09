@@ -1,0 +1,24 @@
+2026-11-04 20:09:33,971 INFO    MainThread:28468 [wandb_setup.py:_flush():81] Current SDK version is 0.31.0
+2026-11-04 20:09:33,971 INFO    MainThread:28468 [wandb_setup.py:_flush():81] Configure stats pid to 28468
+2026-11-04 20:09:33,972 INFO    MainThread:28468 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-11-04 20:09:33,972 INFO    MainThread:28468 [wandb_init.py:setup_run_log_directory():740] Logging user logs to results\ppg_to_ecg_gan_lite_2026-11-04_20-09-30\wandb\run-20261104_200933-7bawx8kx\logs\debug.log
+2026-11-04 20:09:33,972 INFO    MainThread:28468 [wandb_init.py:setup_run_log_directory():741] Logging internal logs to results\ppg_to_ecg_gan_lite_2026-11-04_20-09-30\wandb\run-20261104_200933-7bawx8kx\logs\debug-internal.log
+2026-11-04 20:09:33,972 INFO    MainThread:28468 [wandb_init.py:init():784] calling init triggers
+2026-11-04 20:09:33,972 INFO    MainThread:28468 [wandb_init.py:init():789] wandb.init called with sweep_config: {}
+config: {'model_name': 'ppg_to_ecg_gan', 'wandb_enabled': True, 'wandb_project': 'ppg-to-ecg', 'wandb_entity': None, 'wandb_mode': 'online', 'sampling_rate': 128, 'in_channels': 1, 'out_channels': 1, 'num_unet_layers': 4, 'base_channels': 4, 'gen_transformer_dim': 8, 'gen_transformer_layers': 1, 'gen_transformer_heads': 1, 'gen_transformer_mlp_ratio': 2, 'gen_transformer_dropout': 0.1, 'max_tokens': 512, 'disc_conv_channels': [8, 16, 32], 'disc_conv_kernels': [17, 9, 5], 'disc_conv_stride': 2, 'disc_model_dim': 32, 'disc_transformer_layers': 1, 'disc_transformer_heads': 1, 'disc_ffn_dim': 64, 'disc_dropout': 0.1, 'disc_max_tokens': 1024, 'ssl_hidden_dim1': 32, 'ssl_hidden_dim2': 32, 'ssl_num_classes': 6, 'finetune_hidden_dim1': 64, 'finetune_hidden_dim2': 32, 'batch_size': 4, 'epochs_pretrain': 0, 'epochs_gan': 10, 'lr_generator': 0.0001, 'lr_discriminator': 0.0001, 'betas': [0.5, 0.9], 'lambda_gp': 10.0, 'lambda_l1': 0.0, 'n_critic': 1, 'early_stopping_patience': 10, 'data_loader': 'alyx_data:load_alyx_segments', 'data_fraction': 0.1, 'window_seconds': 4.0, 'overlap': 0.2, 'device': 'cpu', 'seed': 42, 'check_data': False, '_wandb': {}}
+2026-11-04 20:09:33,972 INFO    MainThread:28468 [wandb_init.py:init():832] starting backend
+2026-11-04 20:09:33,972 INFO    MainThread:28468 [wandb_init.py:init():847] sending inform_init request
+2026-11-04 20:09:33,982 INFO    MainThread:28468 [wandb_init.py:init():852] backend started and connected
+2026-11-04 20:09:33,984 INFO    MainThread:28468 [wandb_init.py:init():922] updated telemetry
+2026-11-04 20:09:34,155 INFO    MainThread:28468 [wandb_init.py:init():940] communicating run to backend with 90.0 second timeout
+2026-11-04 20:09:34,593 INFO    MainThread:28468 [wandb_init.py:init():977] starting run threads in backend
+2026-11-04 20:09:34,677 INFO    MainThread:28468 [wandb_run.py:_console_start():2528] atexit reg
+2026-11-04 20:09:34,678 INFO    MainThread:28468 [wandb_run.py:_redirect():2378] redirect: wrap_raw
+2026-11-04 20:09:34,678 INFO    MainThread:28468 [wandb_run.py:_redirect():2447] Wrapping output streams.
+2026-11-04 20:09:34,678 INFO    MainThread:28468 [wandb_run.py:_redirect():2470] Redirects installed.
+2026-11-04 20:09:34,684 INFO    MainThread:28468 [wandb_init.py:init():1015] run started, returning control to user process
+2026-11-04 20:26:22,053 INFO    MainThread:28468 [wandb_run.py:_finish():2300] finishing run hyopplo-hoplo-lab/ppg-to-ecg/7bawx8kx
+2026-11-04 20:26:22,053 INFO    MainThread:28468 [wandb_run.py:_atexit_cleanup():2495] got exitcode: 0
+2026-11-04 20:26:22,054 INFO    MainThread:28468 [wandb_run.py:_restore():2477] restore
+2026-11-04 20:26:22,054 INFO    MainThread:28468 [wandb_run.py:_restore():2483] restore done
+2026-11-04 20:26:23,737 INFO    MainThread:28468 [wandb_run.py:_footer_sync_info():3908] logging synced files

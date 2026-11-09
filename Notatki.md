@@ -1,5 +1,15 @@
-﻿### TODO
+﻿## TODO
+- uruchomić na dłużej model (PC)
+- zbadać jak ilość danych wpływa na długość treningu (logować też czas epoki i pretreningu)
+- jak ilość danych wpływa na jakość pretreningu?
+- zbadać jak batch wpływa na jakość uczenia
 - spróbować dodać inne dane
+- przygotować kod do eksperymentów (tylko do przeklejenia i uruchomienia)
+- które parametry mogą mieć największy wpływ - dogadać - zakresy wartości np strata KL-divergence / architektura
+- sprawdzić na innych metrykach: po 2 nowe metody walidacji, plus te przez nich używane
+- poznać metryki np fretchet distance, dynamic time warping (są w prezentacji)
+- chat ok - podawaj źródła i DOI
+- puścić z tego eksperyment
 
 ## Co zrobiłem:
 - niektóre pliki nie miały rozszerzenia .py, poprawiłem
@@ -39,8 +49,8 @@ MAE HR - poprawność fizjologiczna
 * Dropout (0.1) w Attention i MLP Transformera
 * Skip connections w U-Net - łączy dane stare i nowe
 * Residual connections - sumuje wejście i wyjście (liczy się poprawka wejścia)
-* FUnkcja aktywacji GELU dla CNN i Transformera
-* FUnkcja aktywacji Tanh dla wyjścia Generatora
+* Funkcja aktywacji GELU dla CNN i Transformera
+* Funkcja aktywacji Tanh dla wyjścia Generatora
 * Early stopping patience=12, z użyciem L1_loss na walidacji (ale nie ma tego w Loss_fn)
 * Czyli bezwzględna różnica między sygnałami. Jeśli nasz sygnał zbyt się rozjedzie (w dowolnej osi) - zatrzymujemy uczenie.
 * NIE ma żadnego gradient penalty np l1/l2

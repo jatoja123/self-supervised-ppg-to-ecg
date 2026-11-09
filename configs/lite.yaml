@@ -47,14 +47,14 @@ finetune_hidden_dim2: 32           # Druga warstwa fine-tuning
 # training
 batch_size: 4                      # Przykłady w batchu
 epochs_pretrain: 0                 # 0 = pominięcie SSL
-epochs_gan: 100                     # Maksymalna liczba epok GAN
+epochs_gan: 10                     # Maksymalna liczba epok GAN
 lr_generator: 0.0001               # Learning rate generatora
 lr_discriminator: 0.0001           # Learning rate dyskryminatora
 betas: [0.5, 0.9]                  # Parametry optymalizatora Adam
 lambda_gp: 10.0                    # Waga gradient penalty
-lambda_l1: 0.0                    # Waga błędu rekonstrukcji
+lambda_l1: 0.0                     # Waga błędu rekonstrukcji
 n_critic: 1                        # Aktualizacje krytyka na krok generatora
-early_stopping_patience: 10         # Epoki bez poprawy przed zatrzymaniem
+early_stopping_patience: 10        # Epoki bez poprawy przed zatrzymaniem
 
 # data & dataset
 data_loader: "alyx_data:load_alyx_segments" # Loader danych
