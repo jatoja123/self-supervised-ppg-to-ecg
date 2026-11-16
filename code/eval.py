@@ -54,33 +54,22 @@ def discrete_frechet_distance(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     Signals are embedded as 2D curves: (time_index, amplitude).
     """
 
-    P = np.column_stack([np.arange(len(y_true)), y_true])
-    Q = np.column_stack([np.arange(len(y_pred)), y_pred])
-
-    ca = np.full((len(P), len(Q)), -1.0, dtype=np.float64)
-
-    def dist(a, b):
-        return np.linalg.norm(a - b)
-
-    def c(i, j):
-        if ca[i, j] > -1:
-            return ca[i, j]
-        elif i == 0 and j == 0:
-            ca[i, j] = dist(P[0], Q[0])
-        elif i > 0 and j == 0:
-            ca[i, j] = max(c(i - 1, 0), dist(P[i], Q[0]))
-        elif i == 0 and j > 0:
-            ca[i, j] = max(c(0, j - 1), dist(P[0], Q[j]))
-        elif i > 0 and j > 0:
-            ca[i, j] = max(
-                min(c(i - 1, j), c(i - 1, j - 1), c(i, j - 1)),
-                dist(P[i], Q[j]),
-            )
-        else:
-            ca[i, j] = float("inf")
-        return ca[i, j]
-
-    return float(c(len(P) - 1, len(Q) - 1))
+    # Iterative DP avoids recursion errors on ordinary 4-second windows.
+    previous = np.empty(len(y_pred), dtype=np.float64)
+    current = np.empty_like(previous)
+    for i, amplitude in enumerate(y_true):
+        distances = np.hypot(i - np.arange(len(y_pred)), amplitude - y_pred)
+        for j, distance in enumerate(distances):
+            if i == 0 and j == 0:
+                current[j] = distance
+            elif i == 0:
+                current[j] = max(current[j - 1], distance)
+            elif j == 0:
+                current[j] = max(previous[j], distance)
+            else:
+                current[j] = max(min(previous[j], previous[j - 1], current[j - 1]), distance)
+        previous, current = current, previous
+    return float(previous[-1])
 
 
 # ============================================================

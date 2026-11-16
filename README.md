@@ -49,6 +49,31 @@ Check the default dataset without starting training:
 .\.venv\Scripts\python.exe code/train.py --check-data
 ```
 
+### Backfill test metrics on existing W&B runs
+
+Install the declared dependencies with `uv sync`, then run from the project root:
+
+```powershell
+.\.venv\Scripts\python.exe code/backfill_test_metrics.py --entity YOUR_WANDB_ENTITY --dry-run
+.\.venv\Scripts\python.exe code/backfill_test_metrics.py --entity YOUR_WANDB_ENTITY
+```
+
+The script scans W&B run summaries for missing `test/eval/*` fields, matches each
+run to `results/<run>/best_model.pt` by W&B run ID (or by run name when the local
+W&B ID is unavailable), and updates that same run's summary. It never replaces
+existing metric values. Use `--metrics FD_mean rho_mean` to select specific
+metrics or `--results-dir PATH` for another checkpoint directory.
+
+For each checkpoint, its saved configuration supplies the loader, sampling rate,
+window size, overlap, subject fraction, seed and held-out subject. The script
+calls the same loading and splitting functions as `train.py`; `data_fraction`
+selects subjects, while the held-out test subject is preserved. It checks the
+saved configuration against W&B before evaluation and skips runs without a
+matching local checkpoint. `RMSE_*_normalized` is measured on the loader's
+normalized `[-1, 1]` signals, not in millivolts. These metrics come from
+`code/eval.py`; the original `test/l1`, `test/rmse_normalized` and
+`test/pearson` values are left intact.
+
 ### Other datasets
 
 The models and training loop are independent of the file format. Add a module

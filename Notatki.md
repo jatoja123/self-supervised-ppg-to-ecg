@@ -1,15 +1,16 @@
 ﻿## TODO
-- uruchomić na dłużej model (PC)
 - zbadać jak ilość danych wpływa na długość treningu (logować też czas epoki i pretreningu)
-- jak ilość danych wpływa na jakość pretreningu?
-- zbadać jak batch wpływa na jakość uczenia
-- spróbować dodać inne dane
-- przygotować kod do eksperymentów (tylko do przeklejenia i uruchomienia)
-- które parametry mogą mieć największy wpływ - dogadać - zakresy wartości np strata KL-divergence / architektura
+- jak ilość danych i epok wpływa na jakość pretreningu?
+- zbadać jak batch size wpływa na jakość uczenia
 - sprawdzić na innych metrykach: po 2 nowe metody walidacji, plus te przez nich używane
-- poznać metryki np fretchet distance, dynamic time warping (są w prezentacji)
-- chat ok - podawaj źródła i DOI
-- puścić z tego eksperyment
+- Kuba: poznać metryki np fretchet distance, dynamic time warping (są w prezentacji)
+- Kuba: które parametry mogą mieć największy wpływ - dogadać - zakresy wartości np strata KL-divergence / architektura
+- Ja: jak przetestować zrobione modele na nowych metrykach walidacyjnych? Wczytać, uruchomić, zapisać do wandb, unikać duplikowania 
+- Ja: przygotować do puszczenia wielu eksperymentów na raz - jak?
+- Ja: analiza wyników
+
+### Pomysły co dalej
+- spróbować dodać inne dane
 
 ## Co zrobiłem:
 - niektóre pliki nie miały rozszerzenia .py, poprawiłem
