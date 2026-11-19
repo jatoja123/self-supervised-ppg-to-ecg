@@ -53,7 +53,7 @@ early_stopping_patience: 12        # Liczba epok bez poprawy przed zatrzymaniem
 # data & dataset
 data_loader: "alyx_data:load_alyx_segments" # Funkcja odpowiedzialna za wczytywanie danych
 data_dir: null                     # Ścieżka do danych (null = domyślna)
-window_seconds: 4.0                # Długość pojedynczego okna sygnału (sekundy)
+window_seconds: 8.0                # 1040 próbek przy 130 Hz, podzielne przez 16
 overlap: 0.2                       # Nakładanie się kolejnych okien (20%)
 held_out_subject: null             # ID uczestnika testowego (null = automatyczny wybór)
 

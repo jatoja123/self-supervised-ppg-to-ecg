@@ -12,9 +12,17 @@ from torch.utils.data import DataLoader
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "code"))
 import train
 import alyx_data
+from signal_preprocessing import resample_signal_cubic
 
 
 class AlyxTrainingTests(unittest.TestCase):
+    def test_cubic_resampling_preserves_a_cubic_signal(self):
+        t = np.arange(4, dtype=float)
+        target = np.array([0.5, 1.5, 2.5])
+        actual = resample_signal_cubic(t ** 3, 1, 2,
+                                       sample_times=t, target_times=target)
+        np.testing.assert_allclose(actual, target ** 3)
+
     def test_timestamps_are_sorted_and_units_converted(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ECG.json"
@@ -33,14 +41,14 @@ class AlyxTrainingTests(unittest.TestCase):
             self.assertEqual(times[1] - times[0], 1)
 
     @staticmethod
-    def write_session(root, player, gap=False, indexed=False):
+    def write_session(root, player, gap=False, indexed=False, ppg_delay=0.0):
         for device, name, fs, offset in (("polar-h10", "ECG", 130, 0), ("empatica", "PPG", 64, 0.5)):
             path = root / "players" / str(player) / "2022-05-19" / device / f"{name}.json"
             path.parent.mkdir(parents=True)
             t = np.arange(fs * 16) / fs + offset
             if gap and name == "PPG":
                 t = t[(t < 7) | (t > 10)]
-            x = np.sin(2 * np.pi * 1.2 * t)
+            x = np.sin(2 * np.pi * 1.2 * (t - (ppg_delay if name == "PPG" else 0.0)))
             if indexed:
                 # Receipt timestamps are shared by batches of samples.
                 data = {
@@ -94,6 +102,13 @@ class AlyxTrainingTests(unittest.TestCase):
             self.assertEqual(player_sets[2], {44})
             for first, second in ((0, 1), (0, 2), (1, 2)):
                 self.assertFalse(player_sets[first] & player_sets[second])
+
+    def test_systolic_peaks_are_aligned_with_r_peaks_before_resampling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_session(root, 42, ppg_delay=0.2)
+            ppg, ecg, _ = alyx_data.load_alyx_segments(root, sampling_rate=130)
+            self.assertGreater(np.corrcoef(ppg[1], ecg[1])[0, 1], 0.98)
 
     def test_gaps_are_not_interpolated_into_training_windows(self):
         with tempfile.TemporaryDirectory() as directory:

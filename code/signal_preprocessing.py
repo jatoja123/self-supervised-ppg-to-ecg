@@ -5,15 +5,21 @@ from scipy import signal
 from scipy.interpolate import CubicSpline
 
 
-def resample_signal_cubic(x: np.ndarray, original_fs: float, target_fs: float) -> np.ndarray:
-    if original_fs == target_fs:
+def resample_signal_cubic(
+    x: np.ndarray, original_fs: float, target_fs: float, *,
+    sample_times: np.ndarray | None = None, target_times: np.ndarray | None = None,
+) -> np.ndarray:
+    """Interpolate a signal with a cubic spline, optionally on explicit clocks."""
+    if sample_times is None and target_times is None and original_fs == target_fs:
         return x.copy()
-    t_old = np.arange(len(x)) / original_fs
-    duration = (len(x) - 1) / original_fs
-    n_new = int(round(duration * target_fs)) + 1
-    t_new = np.arange(n_new) / target_fs
-    cs = CubicSpline(t_old, x)
-    return cs(t_new)
+    t_old = np.arange(len(x)) / original_fs if sample_times is None else np.asarray(sample_times)
+    if target_times is None:
+        duration = (len(x) - 1) / original_fs
+        n_new = int(round(duration * target_fs)) + 1
+        t_new = np.arange(n_new) / target_fs
+    else:
+        t_new = np.asarray(target_times)
+    return CubicSpline(t_old, x, extrapolate=False)(t_new)
 
 
 def fir_bandpass_ecg(x: np.ndarray, fs: int, low: float = 0.5, high: float = 45.0, numtaps: int = 401):

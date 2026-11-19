@@ -139,7 +139,7 @@ class ModelConfig:
     data_loader: str = "alyx_data:load_alyx_segments"
     data_dir: Optional[Union[Path, str]] = None
     data_fraction: float = 1.0  # Fraction of SUBJECTS to use, NOT fraction of windows
-    window_seconds: float = 4.0
+    window_seconds: float = 8.0
     overlap: float = 0.2
     held_out_subject: Optional[str] = None
 

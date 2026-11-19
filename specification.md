@@ -58,7 +58,7 @@ Otwórz katalog repozytorium jako projekt i ustaw interpreter na
 | --- | --- |
 | Script path | `code/train.py` |
 | Working directory | Katalog główny repozytorium |
-| Parameters | `--sampling-rate 128 --check-data` |
+| Parameters | `--sampling-rate 130 --window-seconds 8 --check-data` |
 
 Aktywowanie środowiska w terminalu nie jest konieczne, jeśli podajesz pełną
 ścieżkę do jego interpretera, jak w przykładach poniżej. Na Linux/macOS
@@ -143,16 +143,20 @@ Każda sesja przechodzi następujące kroki:
 
 1. Odczyt odpowiadających sobie plików ECG i PPG.
 2. Wyznaczenie wspólnego przedziału czasowego nagrań.
-3. Interpolacja liniowa na wspólną siatkę `--sampling-rate`.
-4. Podział przy przerwach większych niż trzy natywne okresy próbkowania:
+3. Wykrycie szczytów R w ECG i skurczowych szczytów PPG; dopasowanie
+   odpowiadających sobie uderzeń i korekta osi czasu PPG tak, aby szczyty
+   dopasowanych uderzeń miały te same czasy.
+4. Interpolacja obu sygnałów splajnem kubicznym na wspólną siatkę
+   `--sampling-rate` (130 Hz w konfiguracjach treningowych).
+5. Podział przy przerwach większych niż trzy natywne okresy próbkowania:
    około 23,1 ms dla ECG i 46,9 ms dla PPG.
-5. Filtrowanie ciągłych fragmentów: ECG filtrem FIR 0,5–45 Hz, 401
+6. Filtrowanie ciągłych fragmentów: ECG filtrem FIR 0,5–45 Hz, 401
    współczynników; PPG filtrem Butterwortha 0,5–8 Hz, rzędu 4.
    Oba filtry używają `filtfilt`.
-6. Podział na okna o długości `round(window_seconds * sampling_rate)`.
+7. Podział na okna o długości `round(window_seconds * sampling_rate)`.
    Krok okna to `max(1, int(window_size * (1 - overlap)))` próbek.
-7. Odrzucenie par, w których rozstęp ECG lub PPG wynosi najwyżej `1e-8`.
-8. Niezależna normalizacja każdego okna każdego sygnału do `[-1, 1]`
+8. Odrzucenie par, w których rozstęp ECG lub PPG wynosi najwyżej `1e-8`.
+9. Niezależna normalizacja każdego okna każdego sygnału do `[-1, 1]`
    i konwersja do `float32`.
 
 Okna nie przechodzą między sesjami ani przez wykryte duże przerwy. Małe luki
@@ -175,16 +179,14 @@ Generator ma cztery etapy zmniejszania długości o połowę. Do treningu wybier
 liczbę próbek w oknie **podzielną przez 16**, aby długość wyjścia odpowiadała
 długości wzorca ECG.
 
-Aktualne wartości domyślne CLI, 130 Hz i 4 s, dają 520 próbek. Generator
-zwraca dla nich 512 próbek, co powoduje niezgodność rozmiarów podczas
-treningu. `--check-data` tego nie wykrywa, ponieważ nie uruchamia modelu.
-Przykłady treningu poniżej używają **128 Hz i 4 s = 512 próbek**.
-Alternatywą jest 130 Hz i 8 s = 1040 próbek, kosztem większego zużycia pamięci.
+Konfiguracje treningowe używają **130 Hz i 8 s = 1040 próbek**. Okno 4 s
+przy 130 Hz ma 520 próbek i nie jest zgodne z obecnym generatorem, który
+wymaga długości podzielnej przez 16.
 
 ### Sprawdzenie danych bez treningu
 
 ```powershell
-.\.venv\Scripts\python.exe code/train.py --sampling-rate 128 --check-data
+.\.venv\Scripts\python.exe code/train.py --sampling-rate 130 --window-seconds 8 --check-data
 ```
 
 Skrypt odczyta cały zbiór, wykona preprocessing i wypisze liczby okien oraz
@@ -193,7 +195,7 @@ uczestników w trzech podzbiorach. Ta operacja może potrwać i używa pamięci 
 ### Krótkie uruchomienie próbne
 
 ```powershell
-.\.venv\Scripts\python.exe code/train.py --sampling-rate 128 --batch-size 2 --epochs-pretrain 1 --epochs-gan 1 --device cpu
+.\.venv\Scripts\python.exe code/train.py --sampling-rate 130 --window-seconds 8 --batch-size 2 --epochs-pretrain 1 --epochs-gan 1 --device cpu
 ```
 
 To nadal jedna pełna epoka każdego etapu na całym zbiorze, więc na CPU może
@@ -202,19 +204,19 @@ być czasochłonne. Szybkie testy techniczne opisano w sekcji 10.
 ### Pełny trening
 
 ```powershell
-.\.venv\Scripts\python.exe code/train.py --sampling-rate 128 --batch-size 8 --epochs-pretrain 90 --epochs-gan 90
+.\.venv\Scripts\python.exe code/train.py --sampling-rate 130 --window-seconds 8 --batch-size 8 --epochs-pretrain 90 --epochs-gan 90
 ```
 
 ### Własna ścieżka i wybrany uczestnik testowy
 
 ```powershell
-.\.venv\Scripts\python.exe code/train.py --data-dir "D:\datasets\who-is-alyx-2.1" --sampling-rate 128 --held-out-subject 44
+.\.venv\Scripts\python.exe code/train.py --data-dir "D:\datasets\who-is-alyx-2.1" --sampling-rate 130 --window-seconds 8 --held-out-subject 44
 ```
 
 ### Trening bez etapu SSL
 
 ```powershell
-.\.venv\Scripts\python.exe code/train.py --sampling-rate 128 --epochs-pretrain 0 --epochs-gan 90
+.\.venv\Scripts\python.exe code/train.py --sampling-rate 130 --window-seconds 8 --epochs-pretrain 0 --epochs-gan 90
 ```
 
 ## 4. Wszystkie opcje `train.py`

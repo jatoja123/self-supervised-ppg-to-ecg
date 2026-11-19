@@ -8,6 +8,9 @@
 - Ja: jak przetestować zrobione modele na nowych metrykach walidacyjnych? Wczytać, uruchomić, zapisać do wandb, unikać duplikowania 
 - Ja: przygotować do puszczenia wielu eksperymentów na raz - jak?
 - Ja: analiza wyników
+- Zaimplementować dodatkowe metryki walidacyjne
+- Zmienić rodzaj upsamplowania PPG? zgodnie z ich publikacją
+- Stały zbiór testowy: z tego co zostało bierzemy jakiś % do treningu
 
 ### Pomysły co dalej
 - spróbować dodać inne dane

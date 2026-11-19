@@ -14,8 +14,10 @@ from pathlib import Path
 from typing import Optional, Sequence, Tuple, Union
 
 import numpy as np
+from scipy import signal
 
-from signal_preprocessing import butter_bandpass_ppg, fir_bandpass_ecg, segment_with_overlap
+from signal_preprocessing import (butter_bandpass_ppg, fir_bandpass_ecg,
+                                  resample_signal_cubic, segment_with_overlap)
 
 
 def default_data_dir() -> Path:
@@ -77,6 +79,51 @@ def read_alyx_signal(path: Path, *, native_sampling_rate: Optional[float] = None
     return timestamps, values[unique_indices]
 
 
+def _beat_peaks(times: np.ndarray, values: np.ndarray, fs: int, *, ppg: bool) -> np.ndarray:
+    """Detect beat peaks within uninterrupted native-clock runs."""
+    boundaries = np.r_[0, np.flatnonzero(np.diff(times) > 3.0 / fs) + 1, len(times)]
+    peaks = []
+    for left, right in zip(boundaries[:-1], boundaries[1:]):
+        if right - left < 2 * fs:
+            continue
+        x = values[left:right]
+        if ppg:
+            x = butter_bandpass_ppg(x, fs)
+        prominence = 0.3 * np.ptp(x)
+        if prominence <= 1e-8:
+            continue
+        indices, _ = signal.find_peaks(x, distance=int(0.45 * fs), prominence=prominence)
+        peaks.extend(times[left + indices])
+    return np.asarray(peaks)
+
+
+def _align_ppg_to_ecg_peaks(ecg_time: np.ndarray, ecg: np.ndarray,
+                            ppg_time: np.ndarray, ppg: np.ndarray) -> Optional[np.ndarray]:
+    """Warp the PPG clock so matched systolic peaks land on ECG R peaks."""
+    r_peaks = _beat_peaks(ecg_time, ecg, 130, ppg=False)
+    systolic_peaks = _beat_peaks(ppg_time, ppg, 64, ppg=True)
+    if not len(r_peaks) or not len(systolic_peaks):
+        return None
+    matched_ppg, matched_ecg = [], []
+    used_r = set()
+    for peak in systolic_peaks:
+        r_index = np.searchsorted(r_peaks, peak + 0.05, side="right") - 1
+        if r_index < 0 or r_index in used_r:
+            continue
+        delay = peak - r_peaks[r_index]
+        if -0.05 <= delay <= 0.5:
+            matched_ppg.append(peak)
+            matched_ecg.append(r_peaks[r_index])
+            used_r.add(r_index)
+    if not matched_ppg:
+        return None
+    source, target = np.asarray(matched_ppg), np.asarray(matched_ecg)
+    aligned = np.interp(ppg_time, source, target)
+    aligned[ppg_time < source[0]] = ppg_time[ppg_time < source[0]] + target[0] - source[0]
+    aligned[ppg_time > source[-1]] = ppg_time[ppg_time > source[-1]] + target[-1] - source[-1]
+    return aligned
+
+
 def load_alyx_segments(
     data_dir: Optional[Path] = None,
     *,
@@ -85,7 +132,7 @@ def load_alyx_segments(
     overlap_ratio: float = 0.2,
     selected_subjects: Optional[Sequence[Union[int, str]]] = None,
 ):
-    """Align sessions on a common clock, filter continuous runs, then window.
+    """Align beat peaks, resample both signals with cubic splines, then window.
 
     Windows never cross sessions or gaps exceeding three native sample periods.
     ECG is recorded at 130 Hz and Empatica PPG at 64 Hz.
@@ -123,12 +170,18 @@ def load_alyx_segments(
         pairs_found += 1
         ecg_time, ecg = read_alyx_signal(ecg_path, native_sampling_rate=130)
         ppg_time, ppg = read_alyx_signal(ppg_path, native_sampling_rate=64)
-        start, end = max(ecg_time[0], ppg_time[0]), min(ecg_time[-1], ppg_time[-1])
+        # A PPG systolic peak follows the corresponding ECG R peak. Map each
+        # matched peak to its R peak before resampling onto the shared clock.
+        aligned_ppg_time = _align_ppg_to_ecg_peaks(ecg_time, ecg, ppg_time, ppg)
+        if aligned_ppg_time is None:
+            warnings.warn(f"No matching ECG R / PPG systolic peaks: {session_dir}")
+            continue
+        start, end = max(ecg_time[0], aligned_ppg_time[0]), min(ecg_time[-1], aligned_ppg_time[-1])
         if end <= start:
             warnings.warn(f"No common signal interval: {session_dir}")
             continue
         # Work relative to the overlap start to preserve timestamp precision.
-        ecg_time, ppg_time = ecg_time - start, ppg_time - start
+        ecg_time, ppg_time = ecg_time - start, aligned_ppg_time - start
         grid = np.arange(int(np.floor((end - start) * sampling_rate)) + 1) / sampling_rate
         valid = np.ones(len(grid), dtype=bool)
         for timestamps, native_fs in ((ecg_time, 130), (ppg_time, 64)):
@@ -136,8 +189,10 @@ def load_alyx_segments(
                 left = np.searchsorted(grid, timestamps[gap], side="right")
                 right = np.searchsorted(grid, timestamps[gap + 1], side="left")
                 valid[left:right] = False
-        aligned_ecg = np.interp(grid, ecg_time, ecg)
-        aligned_ppg = np.interp(grid, ppg_time, ppg)
+        aligned_ecg = resample_signal_cubic(ecg, 130, sampling_rate,
+                                            sample_times=ecg_time, target_times=grid)
+        aligned_ppg = resample_signal_cubic(ppg, 64, sampling_rate,
+                                            sample_times=ppg_time, target_times=grid)
         edges = np.diff(np.r_[False, valid, False].astype(np.int8))
         for left, right in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)):
             # filtfilt's 401-tap ECG filter requires more than 1203 samples.

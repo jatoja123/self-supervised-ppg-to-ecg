@@ -38,6 +38,12 @@ receipt timestamps occur in batches and are not individual sample times.
 Missing indices are treated as gaps. Unmarked sample loss and differences
 in device delivery latency cannot be corrected from these files alone.
 
+For each paired recording, the loader matches PPG systolic peaks to ECG R
+peaks, shifts the PPG time axis so matched beats coincide, and resamples both
+signals onto the configured grid (130 Hz in the training configs) with cubic
+spline interpolation. It then filters and windows continuous portions of the
+aligned signals.
+
 ## Train 
 
 Run `train.py` for the training. For evaluation run `eval.py`. Cross-validation should be done within train set.

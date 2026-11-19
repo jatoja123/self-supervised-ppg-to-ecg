@@ -6,7 +6,7 @@ wandb_entity: null
 wandb_mode: "online"
 
 # signal
-sampling_rate: 128                  # Częstotliwość próbkowania (Hz)
+sampling_rate: 130                  # Wspólna częstotliwość ECG i PPG (Hz)
 in_channels: 1                     # Kanały wejściowe PPG
 out_channels: 1                    # Kanały wyjściowe ECG
 
@@ -33,7 +33,7 @@ disc_transformer_layers: 1         # Liczba warstw transformera
 disc_transformer_heads: 1          # Liczba głów attention
 disc_ffn_dim: 64                   # Wymiar warstwy FFN
 disc_dropout: 0.1                  # Dropout
-disc_max_tokens: 1024              # Limit pozycji tokenów dyskryminatora
+disc_max_tokens: 1041              # 8 s przy 130 Hz plus token CLS
 
 # self-supervised pretraining head
 ssl_hidden_dim1: 32                # Pierwsza warstwa SSL
@@ -59,7 +59,7 @@ early_stopping_patience: 10        # Epoki bez poprawy przed zatrzymaniem
 # data & dataset
 data_loader: "alyx_data:load_alyx_segments" # Loader danych
 data_dir: null                     # Domyślny katalog danych
-window_seconds: 4.0                # Długość okna (sekundy)
+window_seconds: 8.0                # 1040 próbek, podzielne przez 16
 overlap: 0.2                       # Nakładanie okien (20%)
 held_out_subject: null             # Automatyczny wybór uczestnika testowego
 data_fraction: 0.1
