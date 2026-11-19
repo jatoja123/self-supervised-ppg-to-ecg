@@ -1,16 +1,10 @@
 ﻿## TODO
-- zbadać jak ilość danych wpływa na długość treningu (logować też czas epoki i pretreningu)
-- jak ilość danych i epok wpływa na jakość pretreningu?
-- zbadać jak batch size wpływa na jakość uczenia
-- sprawdzić na innych metrykach: po 2 nowe metody walidacji, plus te przez nich używane
-- Kuba: poznać metryki np fretchet distance, dynamic time warping (są w prezentacji)
-- Kuba: które parametry mogą mieć największy wpływ - dogadać - zakresy wartości np strata KL-divergence / architektura
-- Ja: jak przetestować zrobione modele na nowych metrykach walidacyjnych? Wczytać, uruchomić, zapisać do wandb, unikać duplikowania 
-- Ja: przygotować do puszczenia wielu eksperymentów na raz - jak?
+- Ja: przygotować do puszczenia wielu eksperymentów na raz: przechodzenie po wielu konfiguracjach, lista słowników
 - Ja: analiza wyników
-- Zaimplementować dodatkowe metryki walidacyjne
+- Zaimplementować dodatkowe metryki walidacyjne: 4 wybrane przez kubę
 - Zmienić rodzaj upsamplowania PPG? zgodnie z ich publikacją
 - Stały zbiór testowy: z tego co zostało bierzemy jakiś % do treningu
+- Badamy: Głębokość encodera, mniejsza ilość danych (badanie ablacyjne)
 
 ### Pomysły co dalej
 - spróbować dodać inne dane
