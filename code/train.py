@@ -29,6 +29,8 @@ ECG: (B, 1, T)
 from __future__ import annotations
 
 import os
+import json
+import hashlib
 import math
 import inspect
 import yaml
@@ -138,10 +140,17 @@ class ModelConfig:
     # data & dataset
     data_loader: str = "alyx_data:load_alyx_segments"
     data_dir: Optional[Union[Path, str]] = None
-    data_fraction: float = 1.0  # Fraction of SUBJECTS to use, NOT fraction of windows
+    # Validation and test sets ALWAYS contain a fixed number of subjects,
+    # drawn first (from all participants). data_fraction is applied only to
+    # the REMAINING subjects and controls the size of the TRAINING set.
+    num_val_subjects: int = 2
+    num_test_subjects: int = 2
+    data_fraction: float = 1.0  # Fraction of remaining (non-val/test) SUBJECTS used for training
     window_seconds: float = 8.0
     overlap: float = 0.2
-    held_out_subject: Optional[str] = None
+    # Optional subject ID (or list of IDs) forced into the test set; the rest
+    # of the test set (up to num_test_subjects) is drawn randomly.
+    held_out_subject: Optional[Union[str, int, List[Union[str, int]]]] = None
 
     # environment & execution
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -153,6 +162,10 @@ class ModelConfig:
             raise ValueError("wandb_mode must be 'online', 'offline' or 'disabled'")
         if not isinstance(self.data_fraction, (int, float)) or not math.isfinite(self.data_fraction) or not 0 < self.data_fraction <= 1:
             raise ValueError("data_fraction must be in (0, 1], e.g. 0.25")
+        for name in ("num_val_subjects", "num_test_subjects"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be an integer >= 1")
         # Konwersja list z YAML-a na tuple
         if isinstance(self.disc_conv_channels, list):
             self.disc_conv_channels = tuple(self.disc_conv_channels)
@@ -1115,49 +1128,100 @@ def transfer_pretrained_discriminator_backbone(
 
 
 # ============================================================
-# Example LOSO split helper
+# Subject-level split: fixed validation/test sizes, data_fraction for train
 # ============================================================
 
-def loso_split(subject_ids: np.ndarray, held_out_subject):
-    train_idx = np.where(subject_ids != held_out_subject)[0]
-    test_idx = np.where(subject_ids == held_out_subject)[0]
-    return train_idx, test_idx
+def _subject_sort_key(subject):
+    text = str(subject)
+    return (not text.isdigit(), int(text) if text.isdigit() else 0, text)
 
 
-# ============================================================
-# Dataset-independent loading and training entry point
-# ============================================================
+def _sorted_subjects(subjects) -> list:
+    """Unique subjects (compared as strings), numeric IDs first in numeric order."""
+    unique = {}
+    for s in subjects:
+        unique.setdefault(str(s), s)
+    return sorted(unique.values(), key=_subject_sort_key)
 
-def _choose_subject_subset(available_subjects, data_fraction: float, seed: int,
-                           held_out_subject=None):
-    """Draw a reproducible subject subset, always including the held-out subject.
 
-    Select at least three participants for train/validation/test. The held-out
-    subject is selected from the FULL list (or supplied explicitly), making
-    the test participant stable when changing data_fraction.
+def _as_subject_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return list(value)
+    return [value]
+
+
+def plan_subject_split(available_subjects, *, num_val_subjects: int, num_test_subjects: int,
+                       data_fraction: float = 1.0, seed: int = 42,
+                       held_out_subject=None) -> Dict[str, list]:
+    """Assign SUBJECTS (never single windows) to train/validation/test.
+
+    1. Test: subjects from held_out_subject (if given), filled up to
+       num_test_subjects by a seeded random draw from all subjects.
+    2. Validation: the next num_val_subjects subjects of the same draw.
+    3. Train: ceil(data_fraction * remaining) of the REMAINING subjects.
+
+    Validation/test do not depend on data_fraction, so changing data_fraction
+    changes only the training set. Training subsets are nested: the subjects
+    used with data_fraction=0.1 are also used with data_fraction=0.2.
     """
-    unique = sorted(set(available_subjects), key=lambda x: (str(x).isdigit() is False,
-                                                            int(str(x)) if str(x).isdigit() else str(x)))
-    if len(unique) < 3:
-        raise ValueError("At least three subjects are required for train/validation/test")
+    if not 0 < data_fraction <= 1:
+        raise ValueError("data_fraction must be in (0, 1]")
+    unique = _sorted_subjects(available_subjects)
+    n_fixed = num_val_subjects + num_test_subjects
+    if len(unique) <= n_fixed:
+        raise ValueError(
+            f"Found {len(unique)} subjects, but num_test_subjects + num_val_subjects = "
+            f"{n_fixed}; at least one subject must remain for training")
 
-    if held_out_subject is None:
-        test_subject = unique[0]
-    else:
-        matches = [s for s in unique if str(s) == str(held_out_subject)]
-        if not matches:
-            raise ValueError(f"held_out_subject={held_out_subject} not found in available subjects")
-        test_subject = matches[0]
+    by_name = {str(s): s for s in unique}
+    forced = []
+    for subject in _as_subject_list(held_out_subject):
+        if str(subject) not in by_name:
+            raise ValueError(f"held_out_subject={subject} not found in available subjects")
+        if by_name[str(subject)] not in forced:
+            forced.append(by_name[str(subject)])
+    if len(forced) > num_test_subjects:
+        raise ValueError(f"held_out_subject lists {len(forced)} subjects, "
+                         f"but num_test_subjects={num_test_subjects}")
 
-    target = min(len(unique), max(3, math.ceil(len(unique) * data_fraction)))
-    others = [s for s in unique if str(s) != str(test_subject)]
-    rng = np.random.default_rng(seed)
-    if target < len(unique):
-        picked = rng.choice(len(others), size=target - 1, replace=False)
-        selected = [test_subject] + [others[int(i)] for i in picked]
-    else:
-        selected = unique
-    return sorted(selected, key=lambda x: str(x)), test_subject
+    forced_names = {str(s) for s in forced}
+    rest = [s for s in unique if str(s) not in forced_names]
+    order = [rest[int(i)] for i in np.random.default_rng(seed).permutation(len(rest))]
+
+    n_fill = num_test_subjects - len(forced)
+    test = forced + order[:n_fill]
+    val = order[n_fill:n_fill + num_val_subjects]
+    pool = order[n_fill + num_val_subjects:]
+    # Small epsilon: 0.1 * 30 = 3.0000000000000004 must give 3, not 4.
+    n_train = min(len(pool), max(1, math.ceil(len(pool) * data_fraction - 1e-9)))
+    train = pool[:n_train]
+
+    return {
+        "train": _sorted_subjects(train),
+        "validation": _sorted_subjects(val),
+        "test": _sorted_subjects(test),
+        "available_for_train": len(pool),
+    }
+
+
+def split_indices(subject_ids: np.ndarray, split: Dict[str, list]):
+    """Window indices for each split; every window of a subject stays in one split."""
+    ids = np.asarray(subject_ids).astype(str)
+    present = set(ids.tolist())
+    result = {}
+    for name in ("train", "validation", "test"):
+        names = [str(s) for s in split[name]]
+        missing = [s for s in names if s not in present]
+        if missing:
+            print(f"WARNING: {name} subjects without usable windows: {missing}")
+        idx = np.where(np.isin(ids, names))[0]
+        if not len(idx):
+            raise ValueError(f"The {name} split has no usable windows "
+                             f"(subjects: {split[name]})")
+        result[name] = idx
+    return result["train"], result["validation"], result["test"]
 
 
 def _alyx_participant_folders(data_dir: Optional[Path]):
@@ -1184,16 +1248,68 @@ def _alyx_participant_folders(data_dir: Optional[Path]):
     return None
 
 
+def _plain_subject(subject):
+    """numpy scalar -> plain Python value (for JSON / loader arguments)."""
+    return subject.item() if hasattr(subject, "item") else subject
+
+
+def _usable_subjects_cache_path(loader_spec: str, data_dir: Optional[Path], *,
+                                sampling_rate: int, window_seconds: float,
+                                overlap_ratio: float) -> Path:
+    """One cache file per loader + data directory + windowing settings."""
+    key = json.dumps({
+        "loader": loader_spec,
+        "data_dir": str(Path(data_dir).resolve()) if data_dir is not None else None,
+        "sampling_rate": sampling_rate,
+        "window_seconds": float(window_seconds),
+        "overlap": float(overlap_ratio),
+    }, sort_keys=True)
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
+    return Path("cache") / f"usable_subjects_{digest}.json"
+
+
+def _read_usable_subjects(path: Path, folder_subjects: list):
+    """Cached usable subjects, or None if missing/stale (folder list changed)."""
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if sorted(map(str, data.get("folders", []))) != sorted(map(str, folder_subjects)):
+        print(f"Participant folders changed; ignoring stale cache {path}")
+        return None
+    return data.get("usable") or None
+
+
+def _write_usable_subjects(path: Path, folder_subjects: list, usable: list):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".json.tmp")
+    temp.write_text(json.dumps({
+        "folders": [str(s) for s in _sorted_subjects(folder_subjects)],
+        "usable": [_plain_subject(s) for s in usable],
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }, indent=2), encoding="utf-8")
+    os.replace(temp, path)
+    print(f"Saved list of {len(usable)} usable participants to {path.resolve()}")
+
+
 def load_training_data(loader_spec: str, data_dir: Optional[Path], *,
                        sampling_rate: int, window_seconds: float, overlap_ratio: float,
+                       num_val_subjects: int, num_test_subjects: int,
                        data_fraction: float = 1.0, seed: int = 42,
                        held_out_subject=None):
-    """Return paired PPG/ECG windows from a reproducible fraction of SUBJECTS.
+    """Return paired PPG/ECG windows and the subject split.
 
-    If the data loader accepts 'selected_subjects', only those participants
-    are read (provided it applies the filter before loading JSON files).
-    Existing loaders without the argument still work, but selection occurs
-    AFTER loading and therefore does not save preprocessing time/peak RAM.
+    The split is always planned on subjects that HAVE usable windows, so
+    validation/test can never be empty because of unusable recordings.
+    Usable subjects are only known after loading, so:
+      * first run (or after the cache is invalidated): load ALL participants,
+        save the list of usable ones to cache/usable_subjects_<hash>.json;
+      * next runs: read that list, plan the split and pass 'selected_subjects'
+        to the loader so only the selected participants are read.
+    Loaders without 'selected_subjects' always load everything.
+    Delete the cache/ file to force a full re-scan.
     """
     if sampling_rate <= 0 or not np.isfinite(window_seconds) or window_seconds <= 0:
         raise ValueError("Sampling rate and window length must be positive")
@@ -1211,23 +1327,37 @@ def load_training_data(loader_spec: str, data_dir: Optional[Path], *,
         data_dir=data_dir, sampling_rate=sampling_rate,
         window_seconds=window_seconds, overlap_ratio=overlap_ratio
     )
+    split_kwargs = dict(num_val_subjects=num_val_subjects, num_test_subjects=num_test_subjects,
+                        data_fraction=data_fraction, seed=seed,
+                        held_out_subject=held_out_subject)
 
-    # Optimal path: select participants BEFORE file I/O, if the loader supports it.
-    filtered_before_load = False
-    if data_fraction < 1.0:
-        try:
-            supports_subject_filter = "selected_subjects" in inspect.signature(loader).parameters
-        except (TypeError, ValueError):
-            supports_subject_filter = False
-        if supports_subject_filter:
-            folder_subjects = _alyx_participant_folders(data_dir)
-            if folder_subjects is not None:
-                selected, test_subject = _choose_subject_subset(
-                    folder_subjects, data_fraction, seed, held_out_subject)
-                loader_kwargs["selected_subjects"] = selected
-                filtered_before_load = True
-                print(f"Selected {len(selected)}/{len(folder_subjects)} participants "
-                      f"before loading: {selected} (test: {test_subject})")
+    try:
+        supports_subject_filter = "selected_subjects" in inspect.signature(loader).parameters
+    except (TypeError, ValueError):
+        supports_subject_filter = False
+    folder_subjects = _alyx_participant_folders(data_dir) if supports_subject_filter else None
+    cache_path = _usable_subjects_cache_path(
+        loader_spec, data_dir, sampling_rate=sampling_rate,
+        window_seconds=window_seconds, overlap_ratio=overlap_ratio)
+
+    split = None
+    if folder_subjects is not None:
+        usable = _read_usable_subjects(cache_path, folder_subjects)
+        if usable is not None:
+            split = plan_subject_split(usable, **split_kwargs)
+            selected = {str(s) for s in split["train"] + split["validation"] + split["test"]}
+            # Pass IDs in the same form as the folder names (int or str).
+            loader_kwargs["selected_subjects"] = _sorted_subjects(
+                [s for s in folder_subjects if str(s) in selected])
+            print(f"Using cached list of {len(usable)} usable participants ({cache_path}); "
+                  f"loading only {len(selected)} selected")
+        else:
+            print("No usable-participant cache yet: loading ALL participants once "
+                  "to find out which have usable PPG/ECG")
+    elif data_fraction < 1.0:
+        print("WARNING: data loader does not support 'selected_subjects' (or participant "
+              "directories could not be found). Loading all participants first; "
+              "applying the split to the returned arrays.")
 
     ppg, ecg, subject_ids = loader(**loader_kwargs)
     ppg, ecg = np.asarray(ppg, dtype=np.float32), np.asarray(ecg, dtype=np.float32)
@@ -1241,43 +1371,29 @@ def load_training_data(loader_spec: str, data_dir: Optional[Path], *,
     if max(np.max(np.abs(ppg)), np.max(np.abs(ecg))) > 1.00001:
         raise ValueError("Loader must normalize PPG/ECG to [-1, 1]")
 
-    if data_fraction < 1.0 and not filtered_before_load:
-        print("WARNING: data loader does not support pre-loading subject selection "
-              "(or participant directories could not be found). Loading all "
-              "participants first; applying data_fraction to the returned arrays. "
-              "To save RAM/I/O, add 'selected_subjects=None' to the data loader "
-              "and skip unselected directories BEFORE reading JSON files.")
-        selected, test_subject = _choose_subject_subset(
-            np.unique(subject_ids).tolist(), data_fraction, seed, held_out_subject)
-        mask = np.isin(subject_ids.astype(str), [str(s) for s in selected])
-        ppg, ecg, subject_ids = ppg[mask], ecg[mask], subject_ids[mask]
-        print(f"Selected {len(selected)} participants (test: {test_subject}): {selected}")
+    if split is None:
+        # Everything was loaded: the returned subjects ARE the usable ones.
+        usable = _sorted_subjects([_plain_subject(s) for s in subject_ids])
+        if folder_subjects is not None:
+            _write_usable_subjects(cache_path, folder_subjects, usable)
+            print(f"{len(usable)}/{len(_sorted_subjects(folder_subjects))} participant "
+                  f"folders contain usable PPG/ECG")
+        split = plan_subject_split(usable, **split_kwargs)
+    elif any(str(s) not in set(subject_ids.astype(str).tolist())
+             for s in split["validation"] + split["test"]):
+        print(f"WARNING: some cached participants returned no windows; "
+              f"delete {cache_path} to re-scan the data")
 
-    if len(np.unique(subject_ids)) < 3:
-        raise ValueError("Not enough participants with usable data; need at least 3")
+    selected = [str(s) for s in split["train"] + split["validation"] + split["test"]]
+    mask = np.isin(subject_ids.astype(str), selected)
+    ppg, ecg, subject_ids = ppg[mask], ecg[mask], subject_ids[mask]
 
+    print(f"Subjects: test={len(split['test'])}, validation={len(split['validation'])}, "
+          f"train={len(split['train'])}/{split['available_for_train']} "
+          f"(data_fraction={data_fraction})")
     print(f"Dataset after filtering: {len(subject_ids)} windows, "
           f"{len(np.unique(subject_ids))} participants")
-    return ppg, ecg, subject_ids
-
-
-def split_subjects(subject_ids: np.ndarray, held_out_subject=None,
-                        seed: int = 42):
-    """Keep every session and overlapping window of a player in one split."""
-    unique = np.unique(subject_ids)
-    if len(unique) < 3:
-        raise ValueError("At least three subjects with usable PPG/ECG are required")
-    if held_out_subject is None:
-        held_out_subject = unique[0]
-    matches = unique[unique.astype(str) == str(held_out_subject)]
-    if not len(matches):
-        raise ValueError(f"No usable windows for held-out subject {held_out_subject}")
-    held_out_subject = matches[0]
-    train_idx, test_idx = loso_split(subject_ids, held_out_subject)
-    remaining = np.random.default_rng(seed).permutation(np.unique(subject_ids[train_idx]))
-    val_subjects = remaining[:max(1, int(round(0.1 * len(remaining))))]
-    val_mask = np.isin(subject_ids[train_idx], val_subjects)
-    return train_idx[~val_mask], train_idx[val_mask], test_idx
+    return ppg, ecg, subject_ids, split
 
 
 class TransformationRecognitionDataset(Dataset):
@@ -1312,15 +1428,16 @@ def main():
     set_seed(cfg.seed)
     try:
         print("Loading data")
-        ppg_segments, ecg_segments, subject_ids = load_training_data(
+        ppg_segments, ecg_segments, subject_ids, split = load_training_data(
             cfg.data_loader, cfg.data_dir, sampling_rate=cfg.sampling_rate,
             window_seconds=cfg.window_seconds, overlap_ratio=cfg.overlap,
+            num_val_subjects=cfg.num_val_subjects, num_test_subjects=cfg.num_test_subjects,
             data_fraction=cfg.data_fraction, seed=cfg.seed,
             held_out_subject=cfg.held_out_subject)
         window_size = ppg_segments.shape[1]
         if window_size + 1 > cfg.disc_max_tokens or window_size // 16 > cfg.max_tokens:
             raise ValueError("Window exceeds model positional embedding capacity")
-        final_train_idx, val_idx, test_idx = split_subjects(subject_ids, cfg.held_out_subject, cfg.seed)
+        final_train_idx, val_idx, test_idx = split_indices(subject_ids, split)
     except (FileNotFoundError, ValueError, KeyError, ImportError, AttributeError, TypeError) as exc:
         raise RuntimeError(f"Data loading or splitting failed: {exc}") from exc
     for name, indices in (("train", final_train_idx), ("validation", val_idx), ("test", test_idx)):

@@ -1,0 +1,4 @@
+W&B logging: online | project=ppg-to-ecg | run=ppg_to_ecg_gan_lite_2026-11-26_08-57-48
+W&B dashboard: https://forge.coreweave.com/wandb/hyopplo-hoplo-lab/ppg-to-ecg/runs/ovcbt20l
+= Build GAN model
+== Epoch 1/10

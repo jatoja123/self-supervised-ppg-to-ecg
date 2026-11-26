@@ -21,6 +21,7 @@
 - dodałem zapisywanie metryk do W&B - przy uczeniu dyskryminatora oraz generatora
 - dodatkowo zapisywanie konfiguracji startowej przy eksperymencie (kiedyś się na to naciąłem)
 - dodałem zapisywanie najlepszego modelu po treningu
+- dodałem stałe wydzielanie konkretnej liczby osób do walidacji i testu, niezależnie od data_fraction
 
 ## Loss i metryki
 - W pierwszym etapie SSL jest cross entropy loss bo model przyporządkowuje transformację sygnału do typu transformacji 0/1.

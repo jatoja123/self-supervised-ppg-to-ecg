@@ -1,0 +1,31 @@
+{
+  "os":  "Windows-11-10.0.22631-SP0",
+  "python":  "CPython 3.14.3",
+  "startedAt":  "2026-11-26T07:57:52.666984Z",
+  "program":  "C:\\Users\\fikul\\Documents\\PWR\\Emognition\\self-supervised-ppg-to-ecg\\code\\train.py",
+  "codePath":  "code\\train.py",
+  "codePathLocal":  "code\\train.py",
+  "git":  {
+    "remote":  "https://github.com/jatoja123/self-supervised-ppg-to-ecg",
+    "commit":  "425845cb739787312fe2060b7e745f827f199d0b"
+  },
+  "email":  "hyopplocp@gmail.com",
+  "root":  "results\\ppg_to_ecg_gan_lite_2026-11-26_08-57-48",
+  "host":  "HP-Q4DD3PBV1QT7",
+  "executable":  "C:\\Users\\fikul\\Documents\\PWR\\Emognition\\self-supervised-ppg-to-ecg\\.venv\\Scripts\\python.exe",
+  "cpu_count":  8,
+  "cpu_count_logical":  16,
+  "disk":  {
+    "/":  {
+      "total":  "510674333696",
+      "used":  "437517688832"
+    }
+  },
+  "memory":  {
+    "total":  "33585221632"
+  },
+  "cpu":  {
+    "model":  "AMD Ryzen 7 PRO 7840U w/ Radeon 780M Graphics"
+  },
+  "writerId":  "01a216dc-66af-7d7c-99c7-4d345fa3a99c"
+}
